@@ -699,8 +699,18 @@ class IHCScorer(QMainWindow):
         self.statusBar().showMessage(
             f"从文件夹加载 {len(paths)} 张图像, 点击[批量分析]开始")
 
+    @staticmethod
+    def _imread_unicode(path):
+        """读取图像，支持中文/Unicode路径（兼容Windows）"""
+        try:
+            data = np.fromfile(path, dtype=np.uint8)
+            img = cv2.imdecode(data, cv2.IMREAD_COLOR)
+            return img
+        except Exception:
+            return None
+
     def _load_image(self, path):
-        img = cv2.imread(path)
+        img = self._imread_unicode(path)
         if img is None:
             QMessageBox.warning(self, "错误", f"无法打开图像:\n{path}")
             return
@@ -1077,7 +1087,7 @@ class IHCScorer(QMainWindow):
             self.progress_bar.setValue(i)
             QApplication.processEvents()
 
-            img = cv2.imread(path)
+            img = self._imread_unicode(path)
             if img is None:
                 continue
 
@@ -1186,7 +1196,10 @@ class IHCScorer(QMainWindow):
         )
         if path:
             save_img = cv2.cvtColor(self.score_mask, cv2.COLOR_RGB2BGR)
-            cv2.imwrite(path, save_img)
+            ext = os.path.splitext(path)[1]
+            result, buf = cv2.imencode(ext, save_img)
+            if result:
+                buf.tofile(path)
             self.statusBar().showMessage(f"分析图像已保存: {path}")
 
 
