@@ -1,0 +1,7 @@
+PyQt5
+opencv-python-headless
+numpy
+scikit-image
+matplotlib
+Pillow
+pyinstaller

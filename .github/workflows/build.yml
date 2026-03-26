@@ -1,0 +1,78 @@
+name: Build IHC Score Analyzer
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:  # 允许手动触发
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: windows-latest
+            artifact_name: IHC_Score_Analyzer_Windows
+            ext: .exe
+          - os: macos-latest
+            artifact_name: IHC_Score_Analyzer_macOS
+            ext: ""
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Build with PyInstaller (Windows)
+        if: runner.os == 'Windows'
+        run: pyinstaller --onefile --windowed --name "IHC_Score_Analyzer" --noconfirm ihc_scorer.py
+
+      - name: Build with PyInstaller (macOS)
+        if: runner.os == 'macOS'
+        run: pyinstaller --onefile --windowed --name "IHC_Score_Analyzer" --noconfirm ihc_scorer.py
+
+      - name: Zip macOS app
+        if: runner.os == 'macOS'
+        run: cd dist && zip -r IHC_Score_Analyzer_macOS.zip IHC_Score_Analyzer.app
+
+      - name: Upload artifact (Windows)
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: dist/IHC_Score_Analyzer.exe
+
+      - name: Upload artifact (macOS)
+        if: runner.os == 'macOS'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: dist/IHC_Score_Analyzer_macOS.zip
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            IHC_Score_Analyzer_Windows/IHC_Score_Analyzer.exe
+            IHC_Score_Analyzer_macOS/IHC_Score_Analyzer_macOS.zip
+          generate_release_notes: true
