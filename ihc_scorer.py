@@ -252,14 +252,14 @@ class ScorePieChart(FigureCanvas):
         super().__init__(self.fig)
         self.setMinimumHeight(200)
 
-    def plot_scores(self, negative, weak, moderate, strong):
+    def plot_scores(self, negative, low_pos, positive, high_pos):
         self.fig.clear()
         ax = self.fig.add_subplot(111)
         ax.set_facecolor('#2b2b2b')
 
-        values = [negative, weak, moderate, strong]
-        labels = [f'阴性\n{negative:.1f}%', f'弱阳性\n{weak:.1f}%',
-                  f'中阳性\n{moderate:.1f}%', f'强阳性\n{strong:.1f}%']
+        values = [negative, low_pos, positive, high_pos]
+        labels = [f'Negative\n{negative:.1f}%', f'Low+\n{low_pos:.1f}%',
+                  f'Positive\n{positive:.1f}%', f'High+\n{high_pos:.1f}%']
         colors_list = ['#42a5f5', '#66bb6a', '#ffa726', '#ef5350']
 
         non_zero = [(v, l, c) for v, l, c in zip(values, labels, colors_list) if v > 0.1]
@@ -276,10 +276,11 @@ class BatchResultTable(QTableWidget):
     """批量分析结果表格"""
     def __init__(self):
         super().__init__()
-        self.setColumnCount(8)
+        self.setColumnCount(12)
         self.setHorizontalHeaderLabels([
-            '文件名', '阴性%', '弱阳性%', '中阳性%', '强阳性%',
-            'H-Score', '阳性率%', '分析区域'
+            'File', 'Neg%', 'Low+%', 'Pos%', 'High+%',
+            'Intensity(0-3)', 'Proportion(0-4)', 'IHC Score(0-12)',
+            'H-Score', 'Pos Rate%', 'Clinical', 'Area'
         ])
         self.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self.setAlternatingRowColors(True)
@@ -294,14 +295,36 @@ class BatchResultTable(QTableWidget):
             }
         """)
 
-    def add_result(self, filename, neg, weak, mod, strong, hscore, pos_rate, area_info):
+    def add_result(self, results):
         row = self.rowCount()
         self.insertRow(row)
-        items = [filename, f'{neg:.1f}', f'{weak:.1f}', f'{mod:.1f}',
-                 f'{strong:.1f}', f'{hscore:.1f}', f'{pos_rate:.1f}', area_info]
+        items = [
+            results.get('filename', ''),
+            f"{results['negative']:.1f}",
+            f"{results['low_pos']:.1f}",
+            f"{results['positive']:.1f}",
+            f"{results['high_pos']:.1f}",
+            str(results['intensity_score']),
+            str(results['proportion_score']),
+            str(results['ihc_score']),
+            f"{results['h_score']:.1f}",
+            f"{results['positive_rate']:.1f}",
+            results['clinical'],
+            results['area_info'],
+        ]
         for col, text in enumerate(items):
-            item = QTableWidgetItem(str(text))
+            item = QTableWidgetItem(text)
             item.setTextAlignment(Qt.AlignCenter)
+            # 临床判定列用颜色标注
+            if col == 10:
+                if '+++' in text:
+                    item.setForeground(QColor('#ef5350'))
+                elif '++' in text:
+                    item.setForeground(QColor('#ffa726'))
+                elif '+' in text:
+                    item.setForeground(QColor('#66bb6a'))
+                else:
+                    item.setForeground(QColor('#42a5f5'))
             self.setItem(row, col, item)
 
 
@@ -536,71 +559,75 @@ class IHCScorer(QMainWindow):
         right_inner_layout.addWidget(deconv_group)
 
         # ── 阈值设置 ──
-        thresh_group = QGroupBox("阈值设置 (DAB强度)")
+        thresh_group = QGroupBox("阈值设置 (灰度值)")
         thresh_layout = QGridLayout()
 
         # 阈值说明
-        info_label = QLabel("DAB值越大=染色越深\n调整阈值划分: 阴性|弱阳|中阳|强阳")
+        info_label = QLabel(
+            "灰度值越低=染色越深\n"
+            "High+(0-60) | +(61-120) | Low+(121-180) | -(181-236)"
+        )
         info_label.setStyleSheet("color: #888; font-size: 11px;")
         thresh_layout.addWidget(info_label, 0, 0, 1, 3)
 
-        # 弱阳性阈值
-        thresh_layout.addWidget(QLabel("弱阳性 ≥"), 1, 0)
-        self.slider_weak = QSlider(Qt.Horizontal)
-        self.slider_weak.setRange(0, 255)
-        self.slider_weak.setValue(50)
-        self.slider_weak.valueChanged.connect(self._on_threshold_changed)
-        thresh_layout.addWidget(self.slider_weak, 1, 1)
-        self.lbl_weak = QLabel("50")
-        self.lbl_weak.setMinimumWidth(30)
-        thresh_layout.addWidget(self.lbl_weak, 1, 2)
+        # High Positive / Negative 边界 (灰度60 → DAB 195)
+        thresh_layout.addWidget(QLabel("High+ <="), 1, 0)
+        self.slider_strong = QSlider(Qt.Horizontal)
+        self.slider_strong.setRange(0, 255)
+        self.slider_strong.setValue(60)
+        self.slider_strong.valueChanged.connect(self._on_threshold_changed)
+        thresh_layout.addWidget(self.slider_strong, 1, 1)
+        self.lbl_strong = QLabel("60")
+        self.lbl_strong.setMinimumWidth(30)
+        thresh_layout.addWidget(self.lbl_strong, 1, 2)
 
-        # 中阳性阈值
-        thresh_layout.addWidget(QLabel("中阳性 ≥"), 2, 0)
+        # Positive 边界 (灰度120 → DAB 135)
+        thresh_layout.addWidget(QLabel("Positive <="), 2, 0)
         self.slider_moderate = QSlider(Qt.Horizontal)
         self.slider_moderate.setRange(0, 255)
-        self.slider_moderate.setValue(100)
+        self.slider_moderate.setValue(120)
         self.slider_moderate.valueChanged.connect(self._on_threshold_changed)
         thresh_layout.addWidget(self.slider_moderate, 2, 1)
-        self.lbl_moderate = QLabel("100")
+        self.lbl_moderate = QLabel("120")
         self.lbl_moderate.setMinimumWidth(30)
         thresh_layout.addWidget(self.lbl_moderate, 2, 2)
 
-        # 强阳性阈值
-        thresh_layout.addWidget(QLabel("强阳性 ≥"), 3, 0)
-        self.slider_strong = QSlider(Qt.Horizontal)
-        self.slider_strong.setRange(0, 255)
-        self.slider_strong.setValue(170)
-        self.slider_strong.valueChanged.connect(self._on_threshold_changed)
-        thresh_layout.addWidget(self.slider_strong, 3, 1)
-        self.lbl_strong = QLabel("170")
-        self.lbl_strong.setMinimumWidth(30)
-        thresh_layout.addWidget(self.lbl_strong, 3, 2)
+        # Low Positive 边界 (灰度180 → DAB 75)
+        thresh_layout.addWidget(QLabel("Low+ <="), 3, 0)
+        self.slider_weak = QSlider(Qt.Horizontal)
+        self.slider_weak.setRange(0, 255)
+        self.slider_weak.setValue(180)
+        self.slider_weak.valueChanged.connect(self._on_threshold_changed)
+        thresh_layout.addWidget(self.slider_weak, 3, 1)
+        self.lbl_weak = QLabel("180")
+        self.lbl_weak.setMinimumWidth(30)
+        thresh_layout.addWidget(self.lbl_weak, 3, 2)
 
         # 预设
         preset_layout = QHBoxLayout()
         preset_layout.addWidget(QLabel("预设:"))
+        # (high+, positive, low+) 灰度值
         presets = {
-            "默认": (50, 100, 170),
-            "低敏感度": (80, 140, 200),
-            "高敏感度": (30, 70, 130),
+            "标准": (60, 120, 180),
+            "严格": (40, 100, 160),
+            "宽松": (80, 140, 200),
         }
-        for name, (w, m, s) in presets.items():
+        for name, (s, m, w) in presets.items():
             btn = QPushButton(name)
             btn.setFixedHeight(28)
-            btn.clicked.connect(lambda checked, vals=(w, m, s): self._set_thresholds(*vals))
+            btn.clicked.connect(lambda checked, vals=(s, m, w): self._set_thresholds(*vals))
             preset_layout.addWidget(btn)
         thresh_layout.addLayout(preset_layout, 4, 0, 1, 3)
 
         # 组织掩膜
-        thresh_layout.addWidget(QLabel("背景排除:"), 5, 0)
+        thresh_layout.addWidget(QLabel("背景排除 >="), 5, 0)
         self.slider_tissue = QSlider(Qt.Horizontal)
         self.slider_tissue.setRange(0, 255)
-        self.slider_tissue.setValue(220)
+        self.slider_tissue.setValue(236)
         self.slider_tissue.setToolTip("灰度高于此值的区域视为背景(白色)")
         self.slider_tissue.valueChanged.connect(self._on_threshold_changed)
         thresh_layout.addWidget(self.slider_tissue, 5, 1)
-        self.lbl_tissue = QLabel("220")
+        self.lbl_tissue = QLabel("236")
         self.lbl_tissue.setMinimumWidth(30)
         thresh_layout.addWidget(self.lbl_tissue, 5, 2)
 
@@ -624,7 +651,7 @@ class IHCScorer(QMainWindow):
 
         self.result_text = QTextEdit()
         self.result_text.setReadOnly(True)
-        self.result_text.setMaximumHeight(180)
+        self.result_text.setMaximumHeight(260)
         self.result_text.setFont(QFont("Courier", 12))
         result_layout.addWidget(self.result_text)
 
@@ -829,7 +856,7 @@ class IHCScorer(QMainWindow):
         self._create_score_overlay(results)
 
     def _calculate_scores(self, dab=None, roi=None):
-        """计算IHC评分"""
+        """计算IHC评分（基于灰度值标准）"""
         if dab is None:
             dab = self.dab_channel
 
@@ -839,22 +866,24 @@ class IHCScorer(QMainWindow):
 
         if roi and not roi.isNull():
             x, y, w, h = roi.x(), roi.y(), roi.width(), roi.height()
-            # 确保不越界
             x = max(0, x)
             y = max(0, y)
             w = min(w, dab.shape[1] - x)
             h = min(h, dab.shape[0] - y)
             dab_roi = dab[y:y+h, x:x+w]
-            area_info = f"ROI({x},{y},{w}×{h})"
+            area_info = f"ROI({x},{y},{w}x{h})"
         else:
             dab_roi = dab
-            area_info = "全图"
+            area_info = "Full"
 
-        # 获取阈值
-        t_weak = self.slider_weak.value()
-        t_moderate = self.slider_moderate.value()
-        t_strong = self.slider_strong.value()
-        t_tissue = self.slider_tissue.value()
+        # 灰度值阈值 (从滑块获取)
+        t_high = self.slider_strong.value()     # High+ 上界 (默认60)
+        t_pos = self.slider_moderate.value()     # Positive 上界 (默认120)
+        t_low = self.slider_weak.value()         # Low Positive 上界 (默认180)
+        t_tissue = self.slider_tissue.value()    # 背景排除 (默认236)
+
+        # 将DAB通道转为灰度值 (反转: 灰度值低=染色深)
+        gray = 255 - dab_roi
 
         # 背景掩膜 - 排除白色背景
         if self.rgb_image is not None:
@@ -863,89 +892,141 @@ class IHCScorer(QMainWindow):
                 x, y = max(0, x), max(0, y)
                 w = min(w, self.rgb_image.shape[1] - x)
                 h = min(h, self.rgb_image.shape[0] - y)
-                gray_roi = cv2.cvtColor(
+                img_gray = cv2.cvtColor(
                     self.rgb_image[y:y+h, x:x+w], cv2.COLOR_RGB2GRAY)
             else:
-                gray_roi = cv2.cvtColor(self.rgb_image, cv2.COLOR_RGB2GRAY)
-            tissue_mask = gray_roi < t_tissue
+                img_gray = cv2.cvtColor(self.rgb_image, cv2.COLOR_RGB2GRAY)
+            tissue_mask = img_gray < t_tissue
         else:
-            tissue_mask = np.ones_like(dab_roi, dtype=bool)
+            tissue_mask = np.ones_like(gray, dtype=bool)
 
         total_tissue = np.sum(tissue_mask)
         if total_tissue == 0:
             return {
-                'negative': 100.0, 'weak': 0.0, 'moderate': 0.0, 'strong': 0.0,
+                'negative': 100.0, 'low_pos': 0.0, 'positive': 0.0, 'high_pos': 0.0,
                 'h_score': 0.0, 'positive_rate': 0.0,
+                'intensity_score': 0, 'proportion_score': 0, 'ihc_score': 0,
+                'clinical': 'Negative (-)',
                 'total_pixels': int(dab_roi.size), 'tissue_pixels': 0,
                 'area_info': area_info
             }
 
-        # 分类
-        dab_tissue = dab_roi.copy()
-        dab_tissue[~tissue_mask] = 0
+        # 按灰度值分类
+        # High Positive: 灰度 0 ~ t_high
+        # Positive:      灰度 t_high+1 ~ t_pos
+        # Low Positive:  灰度 t_pos+1 ~ t_low
+        # Negative:      灰度 t_low+1 ~ t_tissue
+        high_mask = tissue_mask & (gray <= t_high)
+        pos_mask = tissue_mask & (gray > t_high) & (gray <= t_pos)
+        low_mask = tissue_mask & (gray > t_pos) & (gray <= t_low)
+        neg_mask = tissue_mask & (gray > t_low)
 
-        negative_mask = tissue_mask & (dab_roi < t_weak)
-        weak_mask = tissue_mask & (dab_roi >= t_weak) & (dab_roi < t_moderate)
-        moderate_mask = tissue_mask & (dab_roi >= t_moderate) & (dab_roi < t_strong)
-        strong_mask = tissue_mask & (dab_roi >= t_strong)
+        n_high = np.sum(high_mask)
+        n_pos = np.sum(pos_mask)
+        n_low = np.sum(low_mask)
+        n_neg = np.sum(neg_mask)
 
-        n_neg = np.sum(negative_mask)
-        n_weak = np.sum(weak_mask)
-        n_mod = np.sum(moderate_mask)
-        n_strong = np.sum(strong_mask)
-
+        pct_high = n_high / total_tissue * 100
+        pct_pos = n_pos / total_tissue * 100
+        pct_low = n_low / total_tissue * 100
         pct_neg = n_neg / total_tissue * 100
-        pct_weak = n_weak / total_tissue * 100
-        pct_mod = n_mod / total_tissue * 100
-        pct_strong = n_strong / total_tissue * 100
 
-        # H-Score = 1×(%弱阳) + 2×(%中阳) + 3×(%强阳), 范围0-300
-        h_score = 1 * pct_weak + 2 * pct_mod + 3 * pct_strong
-        positive_rate = pct_weak + pct_mod + pct_strong
+        # 阳性率 (所有阳性之和)
+        positive_rate = pct_high + pct_pos + pct_low
+
+        # H-Score = 1x(%Low+) + 2x(%Positive) + 3x(%High+), 范围0-300
+        h_score = 1 * pct_low + 2 * pct_pos + 3 * pct_high
+
+        # ── 染色强度评分 (Intensity Score, 0-3) ──
+        # 取最高强度级别中占比 >10% 的作为主要强度
+        if pct_high > 10:
+            intensity_score = 3
+        elif pct_pos > 10:
+            intensity_score = 2
+        elif pct_low > 10:
+            intensity_score = 1
+        else:
+            intensity_score = 0
+
+        # ── 阳性比例评分 (Proportion Score, 0-4) ──
+        if positive_rate <= 0:
+            proportion_score = 0
+        elif positive_rate <= 25:
+            proportion_score = 1
+        elif positive_rate <= 50:
+            proportion_score = 2
+        elif positive_rate <= 75:
+            proportion_score = 3
+        else:
+            proportion_score = 4
+
+        # ── 最终IHC评分 = 强度 x 比例 (0-12) ──
+        ihc_score = intensity_score * proportion_score
+
+        # ── 临床判定 ──
+        if ihc_score == 0:
+            clinical = "Negative (-)"
+        elif ihc_score <= 3:
+            clinical = "Weak Positive (+)"
+        elif ihc_score <= 6:
+            clinical = "Moderate Positive (++)"
+        else:
+            clinical = "Strong Positive (+++)"
 
         return {
-            'negative': pct_neg, 'weak': pct_weak,
-            'moderate': pct_mod, 'strong': pct_strong,
+            'negative': pct_neg, 'low_pos': pct_low,
+            'positive': pct_pos, 'high_pos': pct_high,
             'h_score': h_score, 'positive_rate': positive_rate,
+            'intensity_score': intensity_score,
+            'proportion_score': proportion_score,
+            'ihc_score': ihc_score,
+            'clinical': clinical,
             'total_pixels': int(dab_roi.size),
             'tissue_pixels': int(total_tissue),
             'area_info': area_info,
             'masks': {
-                'negative': negative_mask, 'weak': weak_mask,
-                'moderate': moderate_mask, 'strong': strong_mask,
+                'negative': neg_mask, 'low_pos': low_mask,
+                'positive': pos_mask, 'high_pos': high_mask,
                 'tissue': tissue_mask
             }
         }
 
     def _display_results(self, results):
         """显示评分结果"""
-        text = f"""{'='*40}
-  IHC 评分分析报告
-{'='*40}
-  文件: {os.path.basename(self.current_file)}
-  分析区域: {results['area_info']}
-  组织像素: {results['tissue_pixels']:,}
-{'─'*40}
-  阴性:     {results['negative']:6.1f}%
-  弱阳性:   {results['weak']:6.1f}%  (1+)
-  中阳性:   {results['moderate']:6.1f}%  (2+)
-  强阳性:   {results['strong']:6.1f}%  (3+)
-{'─'*40}
-  ★ H-Score:   {results['h_score']:.1f} / 300
-  ★ 阳性率:    {results['positive_rate']:.1f}%
-{'='*40}"""
+        text = f"""{'='*42}
+  IHC Scoring Report
+{'='*42}
+  File: {os.path.basename(self.current_file)}
+  Area: {results['area_info']}
+  Tissue: {results['tissue_pixels']:,} px
+{'_'*42}
+  Negative (181-236): {results['negative']:6.1f}%
+  Low Positive(121-180): {results['low_pos']:6.1f}%
+  Positive   (61-120): {results['positive']:6.1f}%
+  High Positive (0-60): {results['high_pos']:6.1f}%
+{'_'*42}
+  Intensity Score:   {results['intensity_score']}  (0-3)
+  Proportion Score:  {results['proportion_score']}  (0-4)
+{'_'*42}
+  H-Score:       {results['h_score']:6.1f} / 300
+  Positive Rate: {results['positive_rate']:6.1f}%
+  IHC Score:     {results['ihc_score']:>2d}    (0-12)
+{'='*42}
+  >> {results['clinical']}
+{'='*42}"""
 
         self.result_text.setPlainText(text)
 
         # 更新饼图
         self.pie_chart.plot_scores(
-            results['negative'], results['weak'],
-            results['moderate'], results['strong']
+            results['negative'], results['low_pos'],
+            results['positive'], results['high_pos']
         )
 
         self.statusBar().showMessage(
-            f"分析完成 | H-Score: {results['h_score']:.1f} | "
-            f"阳性率: {results['positive_rate']:.1f}%"
+            f"IHC={results['ihc_score']} | "
+            f"{results['clinical']} | "
+            f"H-Score={results['h_score']:.1f}"
         )
 
     def _create_score_overlay(self, results):
@@ -968,27 +1049,27 @@ class IHCScorer(QMainWindow):
         # 半透明叠加颜色
         alpha = 0.45
 
-        # 阴性 - 蓝色
+        # Negative - 蓝色
         overlay[masks['negative']] = (
             overlay[masks['negative']] * (1 - alpha) +
             np.array([66, 165, 245]) * alpha
         ).astype(np.uint8)
 
-        # 弱阳性 - 绿色
-        overlay[masks['weak']] = (
-            overlay[masks['weak']] * (1 - alpha) +
+        # Low Positive - 绿色
+        overlay[masks['low_pos']] = (
+            overlay[masks['low_pos']] * (1 - alpha) +
             np.array([102, 187, 106]) * alpha
         ).astype(np.uint8)
 
-        # 中阳性 - 橙色
-        overlay[masks['moderate']] = (
-            overlay[masks['moderate']] * (1 - alpha) +
+        # Positive - 橙色
+        overlay[masks['positive']] = (
+            overlay[masks['positive']] * (1 - alpha) +
             np.array([255, 167, 38]) * alpha
         ).astype(np.uint8)
 
-        # 强阳性 - 红色
-        overlay[masks['strong']] = (
-            overlay[masks['strong']] * (1 - alpha) +
+        # High Positive - 红色
+        overlay[masks['high_pos']] = (
+            overlay[masks['high_pos']] * (1 - alpha) +
             np.array([239, 83, 80]) * alpha
         ).astype(np.uint8)
 
@@ -1001,53 +1082,57 @@ class IHCScorer(QMainWindow):
         self.image_tabs.setCurrentIndex(3)  # 切换到评分结果标签
 
     def _update_histogram(self):
-        """更新DAB直方图"""
+        """更新灰度直方图"""
         if self.dab_channel is None:
             return
         roi = self.canvas_original.get_roi()
         if roi and not roi.isNull():
             x, y, w, h = roi.x(), roi.y(), roi.width(), roi.height()
             x, y = max(0, x), max(0, y)
-            data = self.dab_channel[y:y+h, x:x+w]
+            data = 255 - self.dab_channel[y:y+h, x:x+w]
         else:
-            data = self.dab_channel
+            data = 255 - self.dab_channel
 
+        # 灰度值阈值线: High+, Positive, Low+
         thresholds = [
-            self.slider_weak.value(),
-            self.slider_moderate.value(),
-            self.slider_strong.value(),
+            self.slider_strong.value(),   # High+ boundary
+            self.slider_moderate.value(),  # Positive boundary
+            self.slider_weak.value(),      # Low+ boundary
         ]
-        self.histogram.plot_histogram(data, "DAB通道强度分布", thresholds)
+        self.histogram.plot_histogram(
+            data, "Grayscale Distribution",
+            thresholds, colors=['#ef5350', '#ffa726', '#66bb6a']
+        )
 
     # ─── 阈值变化 ─────────────────────────────────────────────────
     def _on_threshold_changed(self):
-        # 确保阈值逻辑: weak < moderate < strong
-        w = self.slider_weak.value()
-        m = self.slider_moderate.value()
-        s = self.slider_strong.value()
+        # 确保阈值逻辑: high+ < positive < low+ < tissue
+        s = self.slider_strong.value()   # High+
+        m = self.slider_moderate.value()  # Positive
+        w = self.slider_weak.value()      # Low+
 
-        if m <= w:
-            m = w + 1
+        if m <= s:
+            m = s + 1
             self.slider_moderate.blockSignals(True)
             self.slider_moderate.setValue(m)
             self.slider_moderate.blockSignals(False)
-        if s <= m:
-            s = m + 1
-            self.slider_strong.blockSignals(True)
-            self.slider_strong.setValue(s)
-            self.slider_strong.blockSignals(False)
+        if w <= m:
+            w = m + 1
+            self.slider_weak.blockSignals(True)
+            self.slider_weak.setValue(w)
+            self.slider_weak.blockSignals(False)
 
-        self.lbl_weak.setText(str(self.slider_weak.value()))
-        self.lbl_moderate.setText(str(self.slider_moderate.value()))
         self.lbl_strong.setText(str(self.slider_strong.value()))
+        self.lbl_moderate.setText(str(self.slider_moderate.value()))
+        self.lbl_weak.setText(str(self.slider_weak.value()))
         self.lbl_tissue.setText(str(self.slider_tissue.value()))
 
         self._update_histogram()
 
-    def _set_thresholds(self, weak, moderate, strong):
-        self.slider_weak.setValue(weak)
-        self.slider_moderate.setValue(moderate)
-        self.slider_strong.setValue(strong)
+    def _set_thresholds(self, high, pos, low):
+        self.slider_strong.setValue(high)
+        self.slider_moderate.setValue(pos)
+        self.slider_weak.setValue(low)
 
     # ─── ROI ──────────────────────────────────────────────────────
     def _toggle_roi_mode(self, checked):
@@ -1113,13 +1198,8 @@ class IHCScorer(QMainWindow):
             results = self._calculate_scores(dab=dab, roi=None)
             self.rgb_image = old_rgb
 
-            self.batch_table.add_result(
-                os.path.basename(path),
-                results['negative'], results['weak'],
-                results['moderate'], results['strong'],
-                results['h_score'], results['positive_rate'],
-                results['area_info']
-            )
+            results['filename'] = os.path.basename(path)
+            self.batch_table.add_result(results)
 
         self.progress_bar.setValue(len(self.batch_files))
         self.progress_bar.hide()
@@ -1143,23 +1223,25 @@ class IHCScorer(QMainWindow):
                 with open(path, 'w', newline='', encoding='utf-8-sig') as f:
                     writer = csv.writer(f)
                     writer.writerow([
-                        '文件名', '阴性%', '弱阳性%', '中阳性%', '强阳性%',
-                        'H-Score', '阳性率%', '组织像素', '分析区域',
-                        '弱阳阈值', '中阳阈值', '强阳阈值'
+                        'File', 'Neg%', 'Low+%', 'Pos%', 'High+%',
+                        'Intensity(0-3)', 'Proportion(0-4)', 'IHC Score(0-12)',
+                        'H-Score', 'Pos Rate%', 'Clinical',
+                        'Tissue Pixels', 'Area'
                     ])
                     writer.writerow([
                         os.path.basename(self.current_file),
                         f"{results['negative']:.2f}",
-                        f"{results['weak']:.2f}",
-                        f"{results['moderate']:.2f}",
-                        f"{results['strong']:.2f}",
+                        f"{results['low_pos']:.2f}",
+                        f"{results['positive']:.2f}",
+                        f"{results['high_pos']:.2f}",
+                        results['intensity_score'],
+                        results['proportion_score'],
+                        results['ihc_score'],
                         f"{results['h_score']:.2f}",
                         f"{results['positive_rate']:.2f}",
+                        results['clinical'],
                         results['tissue_pixels'],
                         results['area_info'],
-                        self.slider_weak.value(),
-                        self.slider_moderate.value(),
-                        self.slider_strong.value(),
                     ])
                 self.statusBar().showMessage(f"结果已导出: {path}")
         else:
