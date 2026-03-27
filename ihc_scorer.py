@@ -889,7 +889,12 @@ class IHCScorer(QMainWindow):
         self._create_score_overlay(results)
 
     def _calculate_scores(self, dab=None, roi=None):
-        """计算IHC评分（基于灰度值标准）"""
+        """计算IHC评分（基于灰度值标准）
+        与 IHC 批量分析工具对齐：
+        - 总像素 = W × H（全图）
+        - 背景像素（灰度 >= 背景阈值）归入阴性，不从分母排除
+        - 所有百分比以全图像素为分母
+        """
         if dab is None:
             dab = self.dab_channel
 
@@ -909,64 +914,49 @@ class IHCScorer(QMainWindow):
             dab_roi = dab
             area_info = "全图"
 
-        # 灰度值阈值 (从滑块获取)
+        # 灰度值阈值
         t_high, t_pos, t_low, t_tissue = self._get_threshold_values()
 
-        # DAB 通道已经是稳定灰度图: 灰度值越低 = 染色越深
+        # DAB 通道灰度: 值越低 = 染色越深
         gray = dab_roi
+        total_pixels = int(gray.size)  # W × H，全图像素
 
-        # 背景掩膜 - 排除白色背景
-        if self.rgb_image is not None:
-            if roi and not roi.isNull():
-                x, y, w, h = roi.x(), roi.y(), roi.width(), roi.height()
-                x, y = max(0, x), max(0, y)
-                w = min(w, self.rgb_image.shape[1] - x)
-                h = min(h, self.rgb_image.shape[0] - y)
-                img_gray = cv2.cvtColor(
-                    self.rgb_image[y:y+h, x:x+w], cv2.COLOR_RGB2GRAY)
-            else:
-                img_gray = cv2.cvtColor(self.rgb_image, cv2.COLOR_RGB2GRAY)
-            tissue_mask = img_gray < t_tissue
-        else:
-            tissue_mask = np.ones_like(gray, dtype=bool)
-
-        total_tissue = np.sum(tissue_mask)
-        if total_tissue == 0:
+        if total_pixels == 0:
             return {
                 'negative': 100.0, 'low_pos': 0.0, 'positive': 0.0, 'high_pos': 0.0,
                 'h_score': 0.0, 'positive_rate': 0.0,
                 'intensity_score': 0, 'intensity_label': '阴性',
-                'intensity_basis': '未检测到有效组织区域',
+                'intensity_basis': '无像素',
                 'mean_positive_gray': None,
                 'proportion_score': 0, 'ihc_score': 0,
                 'clinical': 'Negative',
                 'clinical_detail': '阴性 [-]',
-                'total_pixels': int(dab_roi.size), 'tissue_pixels': 0,
-                'background_pixels': int(dab_roi.size),
+                'total_pixels': 0, 'tissue_pixels': 0,
+                'background_pixels': 0,
                 'area_info': area_info
             }
 
-        # 按灰度值分类
+        # 按灰度值分类（全部像素，背景归入阴性）
         # High Positive: 灰度 0 ~ t_high
         # Positive:      灰度 t_high+1 ~ t_pos
         # Low Positive:  灰度 t_pos+1 ~ t_low
-        # Negative:      灰度 t_low+1 ~ t_tissue
-        high_mask = tissue_mask & (gray <= t_high)
-        pos_mask = tissue_mask & (gray > t_high) & (gray <= t_pos)
-        low_mask = tissue_mask & (gray > t_pos) & (gray <= t_low)
-        neg_mask = tissue_mask & (gray > t_low)
+        # Negative:      灰度 > t_low （含背景）
+        high_mask = (gray <= t_high)
+        pos_mask = (gray > t_high) & (gray <= t_pos)
+        low_mask = (gray > t_pos) & (gray <= t_low)
+        neg_mask = (gray > t_low)
 
         n_high = np.sum(high_mask)
         n_pos = np.sum(pos_mask)
         n_low = np.sum(low_mask)
         n_neg = np.sum(neg_mask)
 
-        pct_high = n_high / total_tissue * 100
-        pct_pos = n_pos / total_tissue * 100
-        pct_low = n_low / total_tissue * 100
-        pct_neg = n_neg / total_tissue * 100
+        pct_high = n_high / total_pixels * 100
+        pct_pos = n_pos / total_pixels * 100
+        pct_low = n_low / total_pixels * 100
+        pct_neg = n_neg / total_pixels * 100
 
-        # 阳性率 (所有阳性之和)
+        # 阳性率
         positive_rate = pct_high + pct_pos + pct_low
 
         # H-Score = 1x(%Low+) + 2x(%Positive) + 3x(%High+), 范围0-300
@@ -977,10 +967,9 @@ class IHCScorer(QMainWindow):
             self._score_intensity_from_gray(gray, high_mask, pos_mask, low_mask)
         )
 
-        # ── 阳性比例评分 (Proportion Score, 0-4) ──
-        if positive_rate <= 0:
-            proportion_score = 0
-        elif positive_rate <= 25:
+        # ── 阳性比例评分 (Proportion Score, 1-4) ──
+        # 最低为 1（与参考工具对齐）
+        if positive_rate <= 25:
             proportion_score = 1
         elif positive_rate <= 50:
             proportion_score = 2
@@ -993,7 +982,6 @@ class IHCScorer(QMainWindow):
         ihc_score = intensity_score * proportion_score
 
         # ── 临床判定 ──
-        # 批量结果按阳性率做二分类，更接近常见 IHC 汇总表的 Positive / Negative 输出。
         if positive_rate < self.CLINICAL_POSITIVE_THRESHOLD:
             clinical = "Negative"
             clinical_detail = "阴性 [-]"
@@ -1007,6 +995,22 @@ class IHCScorer(QMainWindow):
             clinical = "Positive"
             clinical_detail = "强阳性 [+++]"
 
+        # 组织/背景统计（仅用于显示，不影响评分）
+        if self.rgb_image is not None:
+            if roi and not roi.isNull():
+                x, y, w, h = roi.x(), roi.y(), roi.width(), roi.height()
+                x, y = max(0, x), max(0, y)
+                w = min(w, self.rgb_image.shape[1] - x)
+                h = min(h, self.rgb_image.shape[0] - y)
+                img_gray = cv2.cvtColor(
+                    self.rgb_image[y:y+h, x:x+w], cv2.COLOR_RGB2GRAY)
+            else:
+                img_gray = cv2.cvtColor(self.rgb_image, cv2.COLOR_RGB2GRAY)
+            tissue_pixels = int(np.sum(img_gray < t_tissue))
+        else:
+            tissue_pixels = total_pixels
+        background_pixels = total_pixels - tissue_pixels
+
         return {
             'negative': pct_neg, 'low_pos': pct_low,
             'positive': pct_pos, 'high_pos': pct_high,
@@ -1019,14 +1023,13 @@ class IHCScorer(QMainWindow):
             'ihc_score': ihc_score,
             'clinical': clinical,
             'clinical_detail': clinical_detail,
-            'total_pixels': int(dab_roi.size),
-            'tissue_pixels': int(total_tissue),
-            'background_pixels': int(dab_roi.size - total_tissue),
+            'total_pixels': total_pixels,
+            'tissue_pixels': tissue_pixels,
+            'background_pixels': background_pixels,
             'area_info': area_info,
             'masks': {
                 'negative': neg_mask, 'low_pos': low_mask,
                 'positive': pos_mask, 'high_pos': high_mask,
-                'tissue': tissue_mask
             }
         }
 
@@ -1117,9 +1120,14 @@ class IHCScorer(QMainWindow):
             np.array([239, 83, 80]) * alpha
         ).astype(np.uint8)
 
-        # 背景 - 灰暗
-        bg = ~masks['tissue']
-        overlay[bg] = (overlay[bg] * 0.3).astype(np.uint8)
+        # Negative 中的纯背景区域(原图灰度极高)稍微压暗以区分
+        if self.rgb_image is not None:
+            if roi and not roi.isNull():
+                img_g = cv2.cvtColor(self.rgb_image[y:y+h, x:x+w], cv2.COLOR_RGB2GRAY)
+            else:
+                img_g = cv2.cvtColor(self.rgb_image, cv2.COLOR_RGB2GRAY)
+            bg = img_g >= 236
+            overlay[bg] = (overlay[bg] * 0.5).astype(np.uint8)
 
         self.score_mask = overlay
         self.canvas_score.set_image(overlay)
