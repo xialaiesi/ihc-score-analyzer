@@ -252,14 +252,20 @@ class ScorePieChart(FigureCanvas):
         super().__init__(self.fig)
         self.setMinimumHeight(200)
 
-    def plot_scores(self, negative, low_pos, positive, high_pos):
+    def plot_scores(self, negative, low_pos, positive, high_pos, lang='zh'):
         self.fig.clear()
         ax = self.fig.add_subplot(111)
         ax.set_facecolor('#2b2b2b')
 
         values = [negative, low_pos, positive, high_pos]
-        labels = [f'阴性\n{negative:.1f}%', f'弱阳性\n{low_pos:.1f}%',
-                  f'阳性\n{positive:.1f}%', f'强阳性\n{high_pos:.1f}%']
+        if lang == 'zh':
+            labels = [f'阴性\n{negative:.1f}%', f'弱阳性\n{low_pos:.1f}%',
+                      f'阳性\n{positive:.1f}%', f'强阳性\n{high_pos:.1f}%']
+            title = '评分分布'
+        else:
+            labels = [f'Neg\n{negative:.1f}%', f'Low+\n{low_pos:.1f}%',
+                      f'Pos\n{positive:.1f}%', f'High+\n{high_pos:.1f}%']
+            title = 'Score Distribution'
         colors_list = ['#42a5f5', '#66bb6a', '#ffa726', '#ef5350']
 
         non_zero = [(v, l, c) for v, l, c in zip(values, labels, colors_list) if v > 0.1]
@@ -267,7 +273,7 @@ class ScorePieChart(FigureCanvas):
             vals, labs, cols = zip(*non_zero)
             wedges, texts = ax.pie(vals, labels=labs, colors=cols,
                                     startangle=90, textprops={'color': 'white', 'fontsize': 8})
-        ax.set_title('评分分布', color='white', fontsize=10)
+        ax.set_title(title, color='white', fontsize=10)
         self.fig.tight_layout()
         self.draw()
 
@@ -281,7 +287,8 @@ class BatchResultTable(QTableWidget):
             '序号', '图片名称', '总像素', '高强阳(%)', '中阳(%)',
             '低阳(%)', '阴性(%)', '临床判定', '强度评分', '比例评分', 'IHC评分'
         ])
-        self.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.horizontalHeader().setSectionResizeMode(QHeaderView.Interactive)
+        self.horizontalHeader().setStretchLastSection(True)
         self.setAlternatingRowColors(True)
         self.setStyleSheet("""
             QTableWidget {
@@ -326,16 +333,65 @@ class IHCScorer(QMainWindow):
     """IHC评分分析主窗口"""
     CLINICAL_POSITIVE_THRESHOLD = 5.0
 
+    # ── 中英文文本 ──
+    LANG_ZH = {
+        'title': 'IHC Score Analyzer - 免疫组化评分分析',
+        'open': '打开图像(&O)', 'open_folder': '打开文件夹(&D)',
+        'export': '导出结果(&E)', 'save_img': '保存分析图像(&S)',
+        'toolbar_open': '打开图像', 'toolbar_folder': '打开文件夹',
+        'toolbar_roi': '选择ROI', 'toolbar_clear_roi': '清除ROI',
+        'toolbar_analyze': '分析', 'toolbar_batch_analyze': '批量分析',
+        'toolbar_export': '导出CSV', 'toolbar_save': '保存图像',
+        'grp_deconv': '颜色反卷积设置', 'stain_label': '染色方案:',
+        'auto_wb': '自动白平衡',
+        'grp_thresh': '阈值设置 (灰度值)',
+        'lbl_high': '强阳性 <=', 'lbl_pos': '阳性 <=', 'lbl_low': '弱阳性 <=',
+        'preset_label': '预设:', 'preset_std': '标准', 'preset_strict': '严格', 'preset_loose': '宽松',
+        'bg_label': '背景排除 >=',
+        'grp_hist': 'DAB通道直方图', 'grp_result': '评分结果',
+        'tab_original': '原始图像', 'tab_dab': 'DAB通道',
+        'tab_hem': 'Hematoxylin通道', 'tab_score': '评分结果',
+        'batch_tab': '批量分析结果',
+        'table_headers': ['序号', '图片名称', '总像素', '高强阳(%)', '中阳(%)',
+                          '低阳(%)', '阴性(%)', '临床判定', '强度评分', '比例评分', 'IHC评分'],
+        'status_ready': '就绪 - 请打开一张IHC染色图像开始分析',
+        'lang_switch': 'English',
+    }
+    LANG_EN = {
+        'title': 'IHC Score Analyzer',
+        'open': 'Open Image(&O)', 'open_folder': 'Open Folder(&D)',
+        'export': 'Export Results(&E)', 'save_img': 'Save Analysis Image(&S)',
+        'toolbar_open': 'Open', 'toolbar_folder': 'Open Folder',
+        'toolbar_roi': 'Select ROI', 'toolbar_clear_roi': 'Clear ROI',
+        'toolbar_analyze': 'Analyze', 'toolbar_batch_analyze': 'Batch Analyze',
+        'toolbar_export': 'Export CSV', 'toolbar_save': 'Save Image',
+        'grp_deconv': 'Color Deconvolution', 'stain_label': 'Stain:',
+        'auto_wb': 'Auto White Balance',
+        'grp_thresh': 'Threshold (Grayscale)',
+        'lbl_high': 'High+ <=', 'lbl_pos': 'Positive <=', 'lbl_low': 'Low+ <=',
+        'preset_label': 'Preset:', 'preset_std': 'Standard', 'preset_strict': 'Strict', 'preset_loose': 'Loose',
+        'bg_label': 'Background >=',
+        'grp_hist': 'DAB Histogram', 'grp_result': 'Scoring Result',
+        'tab_original': 'Original', 'tab_dab': 'DAB Channel',
+        'tab_hem': 'Hematoxylin', 'tab_score': 'Score Overlay',
+        'batch_tab': 'Batch Results',
+        'table_headers': ['No.', 'Filename', 'Pixels', 'High+(%)', 'Pos(%)',
+                          'Low+(%)', 'Neg(%)', 'Clinical', 'Intensity', 'Proportion', 'IHC Score'],
+        'status_ready': 'Ready - Open an IHC stained image to begin',
+        'lang_switch': '中文',
+    }
+
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("IHC Score Analyzer - 免疫组化评分分析")
+        self.lang = self.LANG_ZH
+        self.setWindowTitle(self.lang['title'])
         self.setMinimumSize(1280, 800)
         self.resize(1440, 900)
 
         # 数据
         self.original_image = None   # BGR
         self.rgb_image = None        # RGB
-        self.dab_channel = None      # DAB通道 (灰度, 0-255, 越高越深)
+        self.dab_channel = None      # DAB通道
         self.hem_channel = None      # Hematoxylin通道
         self.score_mask = None       # 评分掩膜
         self.current_file = ""
@@ -414,49 +470,40 @@ class IHCScorer(QMainWindow):
         menubar = self.menuBar()
         file_menu = menubar.addMenu("文件(&F)")
 
-        open_act = QAction("打开图像(&O)", self)
-        open_act.setShortcut(QKeySequence.Open)
-        open_act.triggered.connect(self.open_image)
-        file_menu.addAction(open_act)
+        self.act_open = QAction("打开图像(&O)", self)
+        self.act_open.setShortcut(QKeySequence.Open)
+        self.act_open.triggered.connect(self.open_image)
+        file_menu.addAction(self.act_open)
 
-        batch_act = QAction("批量打开(&B)", self)
-        batch_act.setShortcut("Ctrl+Shift+O")
-        batch_act.triggered.connect(self.batch_open)
-        file_menu.addAction(batch_act)
-
-        folder_act = QAction("打开文件夹(&D)", self)
-        folder_act.setShortcut("Ctrl+D")
-        folder_act.triggered.connect(self.open_folder)
-        file_menu.addAction(folder_act)
+        self.act_folder = QAction("打开文件夹(&D)", self)
+        self.act_folder.setShortcut("Ctrl+D")
+        self.act_folder.triggered.connect(self.open_folder)
+        file_menu.addAction(self.act_folder)
 
         file_menu.addSeparator()
 
-        export_act = QAction("导出结果(&E)", self)
-        export_act.setShortcut("Ctrl+E")
-        export_act.triggered.connect(self.export_results)
-        file_menu.addAction(export_act)
+        self.act_export = QAction("导出结果(&E)", self)
+        self.act_export.setShortcut("Ctrl+E")
+        self.act_export.triggered.connect(self.export_results)
+        file_menu.addAction(self.act_export)
 
-        export_img_act = QAction("保存分析图像(&S)", self)
-        export_img_act.setShortcut("Ctrl+S")
-        export_img_act.triggered.connect(self.save_analysis_image)
-        file_menu.addAction(export_img_act)
+        self.act_save_img = QAction("保存分析图像(&S)", self)
+        self.act_save_img.setShortcut("Ctrl+S")
+        self.act_save_img.triggered.connect(self.save_analysis_image)
+        file_menu.addAction(self.act_save_img)
 
         # ── 工具栏 ──
         toolbar = QToolBar("工具栏")
         toolbar.setIconSize(QSize(20, 20))
         self.addToolBar(toolbar)
 
-        btn_open = QPushButton("📂 打开图像")
-        btn_open.clicked.connect(self.open_image)
-        toolbar.addWidget(btn_open)
+        self.btn_open = QPushButton("📂 打开图像")
+        self.btn_open.clicked.connect(self.open_image)
+        toolbar.addWidget(self.btn_open)
 
-        btn_batch = QPushButton("📁 批量打开")
-        btn_batch.clicked.connect(self.batch_open)
-        toolbar.addWidget(btn_batch)
-
-        btn_folder = QPushButton("📂 打开文件夹")
-        btn_folder.clicked.connect(self.open_folder)
-        toolbar.addWidget(btn_folder)
+        self.btn_folder = QPushButton("📂 打开文件夹")
+        self.btn_folder.clicked.connect(self.open_folder)
+        toolbar.addWidget(self.btn_folder)
 
         toolbar.addSeparator()
 
@@ -465,31 +512,37 @@ class IHCScorer(QMainWindow):
         self.btn_roi.toggled.connect(self._toggle_roi_mode)
         toolbar.addWidget(self.btn_roi)
 
-        btn_clear_roi = QPushButton("↩️ 清除ROI")
-        btn_clear_roi.clicked.connect(self._clear_roi)
-        toolbar.addWidget(btn_clear_roi)
+        self.btn_clear_roi = QPushButton("↩️ 清除ROI")
+        self.btn_clear_roi.clicked.connect(self._clear_roi)
+        toolbar.addWidget(self.btn_clear_roi)
 
         toolbar.addSeparator()
 
-        btn_analyze = QPushButton("▶ 分析")
-        btn_analyze.setObjectName("primaryBtn")
-        btn_analyze.clicked.connect(self.analyze_current)
-        toolbar.addWidget(btn_analyze)
+        self.btn_analyze = QPushButton("▶ 分析")
+        self.btn_analyze.setObjectName("primaryBtn")
+        self.btn_analyze.clicked.connect(self.analyze_current)
+        toolbar.addWidget(self.btn_analyze)
 
-        btn_batch_analyze = QPushButton("▶▶ 批量分析")
-        btn_batch_analyze.setObjectName("primaryBtn")
-        btn_batch_analyze.clicked.connect(self.batch_analyze)
-        toolbar.addWidget(btn_batch_analyze)
+        self.btn_batch_analyze = QPushButton("▶▶ 批量分析")
+        self.btn_batch_analyze.setObjectName("primaryBtn")
+        self.btn_batch_analyze.clicked.connect(self.batch_analyze)
+        toolbar.addWidget(self.btn_batch_analyze)
 
         toolbar.addSeparator()
 
-        btn_export = QPushButton("💾 导出CSV")
-        btn_export.clicked.connect(self.export_results)
-        toolbar.addWidget(btn_export)
+        self.btn_export = QPushButton("💾 导出CSV")
+        self.btn_export.clicked.connect(self.export_results)
+        toolbar.addWidget(self.btn_export)
 
-        btn_save_img = QPushButton("🖼 保存图像")
-        btn_save_img.clicked.connect(self.save_analysis_image)
-        toolbar.addWidget(btn_save_img)
+        self.btn_save_img = QPushButton("🖼 保存图像")
+        self.btn_save_img.clicked.connect(self.save_analysis_image)
+        toolbar.addWidget(self.btn_save_img)
+
+        toolbar.addSeparator()
+
+        self.btn_lang = QPushButton("🌐 English")
+        self.btn_lang.clicked.connect(self._toggle_language)
+        toolbar.addWidget(self.btn_lang)
 
         # ── 主布局 ──
         central = QWidget()
@@ -525,8 +578,7 @@ class IHCScorer(QMainWindow):
 
         # ── 右侧: 控制面板 ──
         right_widget = QWidget()
-        right_widget.setMaximumWidth(420)
-        right_widget.setMinimumWidth(340)
+        right_widget.setMinimumWidth(300)
         right_layout = QVBoxLayout(right_widget)
         right_layout.setContentsMargins(4, 4, 4, 4)
 
@@ -537,33 +589,35 @@ class IHCScorer(QMainWindow):
         right_inner_layout = QVBoxLayout(right_inner)
 
         # ── 反卷积设置 ──
-        deconv_group = QGroupBox("颜色反卷积设置")
+        self.grp_deconv = QGroupBox("颜色反卷积设置")
         deconv_layout = QGridLayout()
 
-        deconv_layout.addWidget(QLabel("染色方案:"), 0, 0)
+        self.lbl_stain = QLabel("染色方案:")
+        deconv_layout.addWidget(self.lbl_stain, 0, 0)
         self.stain_combo = QComboBox()
-        self.stain_combo.addItems(list(STAIN_VECTORS.keys()))
-        self.stain_combo.setCurrentIndex(0)
+        stain_names = list(STAIN_VECTORS.keys())
+        self.stain_combo.addItems(stain_names)
+        he_idx = stain_names.index("H-E") if "H-E" in stain_names else 0
+        self.stain_combo.setCurrentIndex(he_idx)
         deconv_layout.addWidget(self.stain_combo, 0, 1)
 
         self.chk_auto_balance = QCheckBox("自动白平衡")
         self.chk_auto_balance.setChecked(True)
         deconv_layout.addWidget(self.chk_auto_balance, 1, 0, 1, 2)
 
-        deconv_group.setLayout(deconv_layout)
-        right_inner_layout.addWidget(deconv_group)
+        self.grp_deconv.setLayout(deconv_layout)
+        right_inner_layout.addWidget(self.grp_deconv)
 
         # ── 阈值设置 ──
-        thresh_group = QGroupBox("阈值设置 (灰度值)")
+        self.grp_thresh = QGroupBox("阈值设置 (灰度值)")
         thresh_layout = QGridLayout()
 
-        # 阈值说明
         self.threshold_info_label = QLabel()
         self.threshold_info_label.setStyleSheet("color: #888; font-size: 11px;")
         thresh_layout.addWidget(self.threshold_info_label, 0, 0, 1, 3)
 
-        # High Positive / Negative 边界 (灰度60 → DAB 195)
-        thresh_layout.addWidget(QLabel("强阳性 <="), 1, 0)
+        self.lbl_high_tag = QLabel("High+ <=")
+        thresh_layout.addWidget(self.lbl_high_tag, 1, 0)
         self.slider_strong = QSlider(Qt.Horizontal)
         self.slider_strong.setRange(0, 255)
         self.slider_strong.setValue(60)
@@ -573,8 +627,8 @@ class IHCScorer(QMainWindow):
         self.lbl_strong.setMinimumWidth(30)
         thresh_layout.addWidget(self.lbl_strong, 1, 2)
 
-        # Positive 边界 (灰度120 → DAB 135)
-        thresh_layout.addWidget(QLabel("阳性 <="), 2, 0)
+        self.lbl_pos_tag = QLabel("Positive <=")
+        thresh_layout.addWidget(self.lbl_pos_tag, 2, 0)
         self.slider_moderate = QSlider(Qt.Horizontal)
         self.slider_moderate.setRange(0, 255)
         self.slider_moderate.setValue(120)
@@ -584,8 +638,8 @@ class IHCScorer(QMainWindow):
         self.lbl_moderate.setMinimumWidth(30)
         thresh_layout.addWidget(self.lbl_moderate, 2, 2)
 
-        # Low Positive 边界 (灰度180 → DAB 75)
-        thresh_layout.addWidget(QLabel("弱阳性 <="), 3, 0)
+        self.lbl_low_tag = QLabel("Low+ <=")
+        thresh_layout.addWidget(self.lbl_low_tag, 3, 0)
         self.slider_weak = QSlider(Qt.Horizontal)
         self.slider_weak.setRange(0, 255)
         self.slider_weak.setValue(180)
@@ -597,45 +651,46 @@ class IHCScorer(QMainWindow):
 
         # 预设
         preset_layout = QHBoxLayout()
-        preset_layout.addWidget(QLabel("预设:"))
-        # (high+, positive, low+) 灰度值
-        presets = {
-            "标准": (60, 120, 180),
-            "严格": (40, 100, 160),
-            "宽松": (80, 140, 200),
-        }
-        for name, (s, m, w) in presets.items():
-            btn = QPushButton(name)
-            btn.setFixedHeight(28)
-            btn.clicked.connect(lambda checked, vals=(s, m, w): self._set_thresholds(*vals))
-            preset_layout.addWidget(btn)
+        self.lbl_preset = QLabel("预设:")
+        preset_layout.addWidget(self.lbl_preset)
+        self.btn_preset_std = QPushButton("标准")
+        self.btn_preset_std.setFixedHeight(28)
+        self.btn_preset_std.clicked.connect(lambda: self._set_thresholds(60, 120, 180))
+        preset_layout.addWidget(self.btn_preset_std)
+        self.btn_preset_strict = QPushButton("严格")
+        self.btn_preset_strict.setFixedHeight(28)
+        self.btn_preset_strict.clicked.connect(lambda: self._set_thresholds(40, 100, 160))
+        preset_layout.addWidget(self.btn_preset_strict)
+        self.btn_preset_loose = QPushButton("宽松")
+        self.btn_preset_loose.setFixedHeight(28)
+        self.btn_preset_loose.clicked.connect(lambda: self._set_thresholds(80, 140, 200))
+        preset_layout.addWidget(self.btn_preset_loose)
         thresh_layout.addLayout(preset_layout, 4, 0, 1, 3)
 
-        # 组织掩膜
-        thresh_layout.addWidget(QLabel("背景排除 >="), 5, 0)
+        self.lbl_bg_tag = QLabel("背景排除 >=")
+        thresh_layout.addWidget(self.lbl_bg_tag, 5, 0)
         self.slider_tissue = QSlider(Qt.Horizontal)
         self.slider_tissue.setRange(0, 255)
         self.slider_tissue.setValue(236)
-        self.slider_tissue.setToolTip("灰度高于此值的区域视为背景(白色)")
         self.slider_tissue.valueChanged.connect(self._on_threshold_changed)
         thresh_layout.addWidget(self.slider_tissue, 5, 1)
         self.lbl_tissue = QLabel("236")
         self.lbl_tissue.setMinimumWidth(30)
         thresh_layout.addWidget(self.lbl_tissue, 5, 2)
 
-        thresh_group.setLayout(thresh_layout)
-        right_inner_layout.addWidget(thresh_group)
+        self.grp_thresh.setLayout(thresh_layout)
+        right_inner_layout.addWidget(self.grp_thresh)
 
         # ── DAB直方图 ──
-        hist_group = QGroupBox("DAB通道直方图")
+        self.grp_hist = QGroupBox("DAB通道直方图")
         hist_layout = QVBoxLayout()
         self.histogram = HistogramWidget()
         hist_layout.addWidget(self.histogram)
-        hist_group.setLayout(hist_layout)
-        right_inner_layout.addWidget(hist_group)
+        self.grp_hist.setLayout(hist_layout)
+        right_inner_layout.addWidget(self.grp_hist)
 
         # ── 评分结果 ──
-        result_group = QGroupBox("评分结果")
+        self.grp_result = QGroupBox("评分结果")
         result_layout = QVBoxLayout()
 
         self.pie_chart = ScorePieChart()
@@ -647,8 +702,8 @@ class IHCScorer(QMainWindow):
         self.result_text.setFont(QFont("Courier", 12))
         result_layout.addWidget(self.result_text)
 
-        result_group.setLayout(result_layout)
-        right_inner_layout.addWidget(result_group)
+        self.grp_result.setLayout(result_layout)
+        right_inner_layout.addWidget(self.grp_result)
 
         right_inner_layout.addStretch()
         right_scroll.setWidget(right_inner)
@@ -657,18 +712,23 @@ class IHCScorer(QMainWindow):
 
         splitter.setSizes([900, 400])
 
-        # ── 底部: 批量结果标签页 ──
+        # ── 底部: 批量结果标签页（可拖拽缩放） ──
         self.batch_tab = QTabWidget()
         self.batch_table = BatchResultTable()
         self.batch_tab.addTab(self.batch_table, "批量分析结果")
-        self.batch_tab.setMaximumHeight(200)
+        self.batch_tab.setMinimumHeight(80)
         self.batch_tab.hide()
 
+        # 垂直分割器：上方图像+控制面板，下方批量表格
+        vsplitter = QSplitter(Qt.Vertical)
+        upper_widget = QWidget()
+        upper_widget.setLayout(main_layout)
+        vsplitter.addWidget(upper_widget)
+        vsplitter.addWidget(self.batch_tab)
+        vsplitter.setSizes([600, 250])
+
         outer_layout = QVBoxLayout()
-        container = QWidget()
-        container.setLayout(main_layout)
-        outer_layout.addWidget(container)
-        outer_layout.addWidget(self.batch_tab)
+        outer_layout.addWidget(vsplitter)
         outer_layout.setContentsMargins(0, 0, 0, 0)
 
         outer_widget = QWidget()
@@ -851,12 +911,20 @@ class IHCScorer(QMainWindow):
         """更新阈值说明文本，和 IHC Profiler 的灰度定义保持一致"""
         t_high, t_pos, t_low, t_tissue = self._get_threshold_values()
         negative_upper = max(t_low + 1, t_tissue - 1)
-        self.threshold_info_label.setText(
-            "灰度值越低 = 染色越深\n"
-            f"强阳性(0-{t_high}) | 阳性({t_high + 1}-{t_pos}) | "
-            f"弱阳性({t_pos + 1}-{t_low}) | 阴性({t_low + 1}-{negative_upper}) | "
-            f"背景({t_tissue}-255, 自动排除)"
-        )
+        if self.lang is self.LANG_ZH:
+            self.threshold_info_label.setText(
+                "灰度值越低 = 染色越深\n"
+                f"强阳性(0-{t_high}) | 阳性({t_high + 1}-{t_pos}) | "
+                f"弱阳性({t_pos + 1}-{t_low}) | 阴性({t_low + 1}-{negative_upper}) | "
+                f"背景({t_tissue}-255, 自动排除)"
+            )
+        else:
+            self.threshold_info_label.setText(
+                "Lower grayscale = Deeper staining\n"
+                f"High+(0-{t_high}) | Pos({t_high + 1}-{t_pos}) | "
+                f"Low+({t_pos + 1}-{t_low}) | Neg({t_low + 1}-{negative_upper}) | "
+                f"BG({t_tissue}-255, excluded)"
+            )
 
     def _score_intensity_from_gray(self, gray, high_mask, pos_mask, low_mask):
         """根据阳性区域平均灰度估算染色强度，减少弱串色把所有样本都压成 1 分的问题"""
@@ -919,7 +987,7 @@ class IHCScorer(QMainWindow):
 
         # DAB 通道灰度: 值越低 = 染色越深
         gray = dab_roi
-        total_pixels = int(gray.size)  # W × H，全图像素
+        total_pixels = int(gray.size)  # W × H，全图像素（显示用）
 
         if total_pixels == 0:
             return {
@@ -928,7 +996,7 @@ class IHCScorer(QMainWindow):
                 'intensity_score': 0, 'intensity_label': '阴性',
                 'intensity_basis': '无像素',
                 'mean_positive_gray': None,
-                'proportion_score': 0, 'ihc_score': 0,
+                'proportion_score': 1, 'ihc_score': 0,
                 'clinical': 'Negative',
                 'clinical_detail': '阴性 [-]',
                 'total_pixels': 0, 'tissue_pixels': 0,
@@ -936,25 +1004,33 @@ class IHCScorer(QMainWindow):
                 'area_info': area_info
             }
 
-        # 按灰度值分类（全部像素，背景归入阴性）
-        # High Positive: 灰度 0 ~ t_high
-        # Positive:      灰度 t_high+1 ~ t_pos
-        # Low Positive:  灰度 t_pos+1 ~ t_low
-        # Negative:      灰度 > t_low （含背景）
-        high_mask = (gray <= t_high)
-        pos_mask = (gray > t_high) & (gray <= t_pos)
-        low_mask = (gray > t_pos) & (gray <= t_low)
-        neg_mask = (gray > t_low)
+        # ── 严格按 IHC Profiler 规则分类 ──
+        # Region4: High Positive  i>=0   && i<61   (灰度 0-60)
+        # Region3: Positive       i>60   && i<121  (灰度 61-120)
+        # Region2: Low Positive   i>120  && i<181  (灰度 121-180)
+        # Region1: Negative       i>180  && i<236  (灰度 181-235)
+        # Region0: Background     i>235  && i<=256 (灰度 236-255, 排除)
+        high_mask = (gray >= 0) & (gray < 61)
+        pos_mask = (gray > 60) & (gray < 121)
+        low_mask = (gray > 120) & (gray < 181)
+        neg_mask = (gray > 180) & (gray < 236)
+        bg_mask = (gray > 235)
 
         n_high = np.sum(high_mask)
         n_pos = np.sum(pos_mask)
         n_low = np.sum(low_mask)
         n_neg = np.sum(neg_mask)
+        n_bg = np.sum(bg_mask)
 
-        pct_high = n_high / total_pixels * 100
-        pct_pos = n_pos / total_pixels * 100
-        pct_low = n_low / total_pixels * 100
-        pct_neg = n_neg / total_pixels * 100
+        # 分母 = 非背景像素（与 IHC Profiler 一致）
+        tissue_total = n_high + n_pos + n_low + n_neg
+        if tissue_total == 0:
+            tissue_total = 1  # 防止除零
+
+        pct_high = n_high / tissue_total * 100
+        pct_pos = n_pos / tissue_total * 100
+        pct_low = n_low / tissue_total * 100
+        pct_neg = n_neg / tissue_total * 100
 
         # 阳性率
         positive_rate = pct_high + pct_pos + pct_low
@@ -963,6 +1039,7 @@ class IHCScorer(QMainWindow):
         h_score = 1 * pct_low + 2 * pct_pos + 3 * pct_high
 
         # ── 染色强度评分 (Intensity Score, 0-3) ──
+        # 阴性=0, 弱阳性=1, 阳性=2, 强阳性=3
         intensity_score, intensity_label, intensity_basis, mean_positive_gray = (
             self._score_intensity_from_gray(gray, high_mask, pos_mask, low_mask)
         )
@@ -995,21 +1072,9 @@ class IHCScorer(QMainWindow):
             clinical = "Positive"
             clinical_detail = "强阳性 [+++]"
 
-        # 组织/背景统计（仅用于显示，不影响评分）
-        if self.rgb_image is not None:
-            if roi and not roi.isNull():
-                x, y, w, h = roi.x(), roi.y(), roi.width(), roi.height()
-                x, y = max(0, x), max(0, y)
-                w = min(w, self.rgb_image.shape[1] - x)
-                h = min(h, self.rgb_image.shape[0] - y)
-                img_gray = cv2.cvtColor(
-                    self.rgb_image[y:y+h, x:x+w], cv2.COLOR_RGB2GRAY)
-            else:
-                img_gray = cv2.cvtColor(self.rgb_image, cv2.COLOR_RGB2GRAY)
-            tissue_pixels = int(np.sum(img_gray < t_tissue))
-        else:
-            tissue_pixels = total_pixels
-        background_pixels = total_pixels - tissue_pixels
+        # 背景统计（来自 DAB 通道的 Region0）
+        background_pixels = int(n_bg)
+        tissue_pixels = int(tissue_total)
 
         return {
             'negative': pct_neg, 'low_pos': pct_low,
@@ -1065,9 +1130,10 @@ class IHCScorer(QMainWindow):
         self.result_text.setPlainText(text)
 
         # 更新饼图
+        pie_lang = 'zh' if self.lang is self.LANG_ZH else 'en'
         self.pie_chart.plot_scores(
             results['negative'], results['low_pos'],
-            results['positive'], results['high_pos']
+            results['positive'], results['high_pos'], lang=pie_lang
         )
 
         self.statusBar().showMessage(
@@ -1202,6 +1268,69 @@ class IHCScorer(QMainWindow):
         self.slider_strong.setValue(high)
         self.slider_moderate.setValue(pos)
         self.slider_weak.setValue(low)
+
+    # ─── 语言切换 ──────────────────────────────────────────────────
+    def _toggle_language(self):
+        if self.lang is self.LANG_ZH:
+            self.lang = self.LANG_EN
+        else:
+            self.lang = self.LANG_ZH
+        self._apply_language()
+
+    def _apply_language(self):
+        L = self.lang
+        self.setWindowTitle(L['title'])
+        self.btn_lang.setText("🌐 " + L['lang_switch'])
+
+        # 工具栏按钮
+        self.btn_open.setText("📂 " + L['toolbar_open'])
+        self.btn_folder.setText("📂 " + L['toolbar_folder'])
+        self.btn_roi.setText("✂️ " + L['toolbar_roi'])
+        self.btn_clear_roi.setText("↩️ " + L['toolbar_clear_roi'])
+        self.btn_analyze.setText("▶ " + L['toolbar_analyze'])
+        self.btn_batch_analyze.setText("▶▶ " + L['toolbar_batch_analyze'])
+        self.btn_export.setText("💾 " + L['toolbar_export'])
+        self.btn_save_img.setText("🖼 " + L['toolbar_save'])
+
+        # 菜单项
+        self.act_open.setText(L['open'])
+        self.act_folder.setText(L['open_folder'])
+        self.act_export.setText(L['export'])
+        self.act_save_img.setText(L['save_img'])
+
+        # 右侧面板 - GroupBox 标题
+        self.grp_deconv.setTitle(L['grp_deconv'])
+        self.grp_thresh.setTitle(L['grp_thresh'])
+        self.grp_hist.setTitle(L['grp_hist'])
+        self.grp_result.setTitle(L['grp_result'])
+
+        # 右侧面板 - 标签
+        self.lbl_stain.setText(L['stain_label'])
+        self.chk_auto_balance.setText(L['auto_wb'])
+        self.lbl_high_tag.setText(L['lbl_high'])
+        self.lbl_pos_tag.setText(L['lbl_pos'])
+        self.lbl_low_tag.setText(L['lbl_low'])
+        self.lbl_preset.setText(L['preset_label'])
+        self.btn_preset_std.setText(L['preset_std'])
+        self.btn_preset_strict.setText(L['preset_strict'])
+        self.btn_preset_loose.setText(L['preset_loose'])
+        self.lbl_bg_tag.setText(L['bg_label'])
+
+        # 图像标签页
+        self.image_tabs.setTabText(0, L['tab_original'])
+        self.image_tabs.setTabText(1, L['tab_dab'])
+        self.image_tabs.setTabText(2, L['tab_hem'])
+        self.image_tabs.setTabText(3, L['tab_score'])
+
+        # 批量表格
+        self.batch_tab.setTabText(0, L['batch_tab'])
+        for col, header in enumerate(L['table_headers']):
+            self.batch_table.setHorizontalHeaderItem(col, QTableWidgetItem(header))
+
+        # 刷新阈值说明文字
+        self._update_threshold_info()
+
+        self.statusBar().showMessage(L['status_ready'])
 
     # ─── ROI ──────────────────────────────────────────────────────
     def _toggle_roi_mode(self, checked):
