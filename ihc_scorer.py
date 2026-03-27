@@ -276,11 +276,10 @@ class BatchResultTable(QTableWidget):
     """批量分析结果表格"""
     def __init__(self):
         super().__init__()
-        self.setColumnCount(12)
+        self.setColumnCount(11)
         self.setHorizontalHeaderLabels([
-            '文件', '阴性%', '弱阳性%', '阳性%', '强阳性%',
-            '强度评分(0-3)', '比例评分(0-4)', 'IHC评分(0-12)',
-            'H-Score', '阳性率%', '判定', '区域'
+            '序号', '图片名称', '总像素', '高强阳(%)', '中阳(%)',
+            '低阳(%)', '阴性(%)', '临床判定', '强度评分', '比例评分', 'IHC评分'
         ])
         self.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self.setAlternatingRowColors(True)
@@ -299,30 +298,25 @@ class BatchResultTable(QTableWidget):
         row = self.rowCount()
         self.insertRow(row)
         items = [
+            str(row + 1),
             results.get('filename', ''),
-            f"{results['negative']:.1f}",
-            f"{results['low_pos']:.1f}",
-            f"{results['positive']:.1f}",
-            f"{results['high_pos']:.1f}",
+            f"{results['total_pixels']:,}",
+            f"{results['high_pos']:.2f}",
+            f"{results['positive']:.2f}",
+            f"{results['low_pos']:.2f}",
+            f"{results['negative']:.2f}",
+            results['clinical'],
             str(results['intensity_score']),
             str(results['proportion_score']),
             str(results['ihc_score']),
-            f"{results['h_score']:.1f}",
-            f"{results['positive_rate']:.1f}",
-            results['clinical'],
-            results['area_info'],
         ]
         for col, text in enumerate(items):
             item = QTableWidgetItem(text)
             item.setTextAlignment(Qt.AlignCenter)
             # 临床判定列用颜色标注
-            if col == 10:
-                if '+++' in text:
-                    item.setForeground(QColor('#ef5350'))
-                elif '++' in text:
+            if col == 7:
+                if 'Positive' in text or '阳性' in text:
                     item.setForeground(QColor('#ffa726'))
-                elif '+' in text:
-                    item.setForeground(QColor('#66bb6a'))
                 else:
                     item.setForeground(QColor('#42a5f5'))
             self.setItem(row, col, item)
@@ -330,6 +324,7 @@ class BatchResultTable(QTableWidget):
 
 class IHCScorer(QMainWindow):
     """IHC评分分析主窗口"""
+    CLINICAL_POSITIVE_THRESHOLD = 5.0
 
     def __init__(self):
         super().__init__()
@@ -758,29 +753,13 @@ class IHCScorer(QMainWindow):
         if self.rgb_image is None:
             return
 
-        stain_name = self.stain_combo.currentText()
         rgb = self.rgb_image.copy()
 
         # 白平衡
         if self.chk_auto_balance.isChecked():
             rgb = self._white_balance(rgb)
 
-        if stain_name == "H-DAB (skimage)":
-            # 使用skimage的HED反卷积
-            img_float = rgb.astype(np.float64) / 255.0
-            img_float = np.clip(img_float, 1e-6, 1.0)
-            hed = rgb2hed(img_float)
-            # H通道
-            hem = hed[:, :, 0]
-            hem = np.clip(hem, 0, None)
-            hem = (hem / (hem.max() + 1e-6) * 255).astype(np.uint8)
-            # DAB通道 (E通道在HED中实际对应DAB)
-            dab = hed[:, :, 2]
-            dab = np.clip(dab, 0, None)
-            dab = (dab / (dab.max() + 1e-6) * 255).astype(np.uint8)
-        else:
-            stain_matrix = STAIN_VECTORS[stain_name]
-            hem, dab = self._color_deconvolution(rgb, stain_matrix)
+        hem, dab = self._extract_stain_channels(rgb)
 
         self.dab_channel = dab
         self.hem_channel = hem
@@ -795,8 +774,29 @@ class IHCScorer(QMainWindow):
         # 更新直方图
         self._update_histogram()
 
+    def _stain_to_gray(self, stain_channel):
+        """将光密度通道转换为稳定的 8-bit 灰度图，避免单图归一化导致阴性图被放大"""
+        stain_channel = np.clip(stain_channel, 0, None)
+        gray = np.exp(-stain_channel) * 255.0
+        return np.clip(gray, 0, 255).astype(np.uint8)
+
+    def _extract_stain_channels(self, rgb):
+        """提取 Hematoxylin / DAB 灰度通道，输出格式与 IHC Profiler 的阈值定义一致"""
+        stain_name = self.stain_combo.currentText()
+
+        if stain_name == "H-DAB (skimage)":
+            img_float = rgb.astype(np.float64) / 255.0
+            img_float = np.clip(img_float, 1e-6, 1.0)
+            hed = rgb2hed(img_float)
+            hem = self._stain_to_gray(hed[:, :, 0])
+            dab = self._stain_to_gray(hed[:, :, 2])
+            return hem, dab
+
+        stain_matrix = STAIN_VECTORS[stain_name]
+        return self._color_deconvolution(rgb, stain_matrix)
+
     def _color_deconvolution(self, rgb_img, stain_matrix):
-        """Beer-Lambert颜色反卷积"""
+        """Beer-Lambert颜色反卷积，输出稳定灰度通道"""
         img = rgb_img.astype(np.float64) / 255.0
         img = np.clip(img, 1e-6, 1.0)
 
@@ -821,17 +821,12 @@ class IHCScorer(QMainWindow):
         stains = od_flat @ inv_matrix.T
         stains = stains.reshape(h, w, 3)
 
-        # 提取各通道并归一化到0-255
+        # 提取各通道并转换为稳定灰度图:
+        # 强染色 -> 低灰度，阴性/背景 -> 高灰度
         channels = []
         for i in range(2):
             ch = stains[:, :, i]
-            ch = np.clip(ch, 0, None)
-            # 使用百分位数归一化避免极端值影响
-            p99 = np.percentile(ch, 99.5)
-            if p99 > 0:
-                ch = ch / p99 * 255
-            ch = np.clip(ch, 0, 255).astype(np.uint8)
-            channels.append(ch)
+            channels.append(self._stain_to_gray(ch))
 
         return channels[0], channels[1]  # Hematoxylin, DAB
 
@@ -862,6 +857,27 @@ class IHCScorer(QMainWindow):
             f"弱阳性({t_pos + 1}-{t_low}) | 阴性({t_low + 1}-{negative_upper}) | "
             f"背景({t_tissue}-255, 自动排除)"
         )
+
+    def _score_intensity_from_gray(self, gray, high_mask, pos_mask, low_mask):
+        """根据阳性区域平均灰度估算染色强度，减少弱串色把所有样本都压成 1 分的问题"""
+        positive_mask = high_mask | pos_mask | low_mask
+        positive_values = gray[positive_mask]
+        if positive_values.size == 0:
+            return 0, '阴性', '未检测到阳性像素', None
+
+        mean_gray = float(np.mean(positive_values))
+        if mean_gray <= 110:
+            intensity_score = 3
+            intensity_label = '强阳性'
+        elif mean_gray <= 150:
+            intensity_score = 2
+            intensity_label = '阳性'
+        else:
+            intensity_score = 1
+            intensity_label = '弱阳性'
+
+        intensity_basis = f"阳性区域平均灰度: {mean_gray:.1f}"
+        return intensity_score, intensity_label, intensity_basis, mean_gray
 
     # ─── 分析 ─────────────────────────────────────────────────────
     def analyze_current(self):
@@ -896,8 +912,8 @@ class IHCScorer(QMainWindow):
         # 灰度值阈值 (从滑块获取)
         t_high, t_pos, t_low, t_tissue = self._get_threshold_values()
 
-        # 将DAB通道转为灰度值 (反转: 灰度值低=染色深)
-        gray = 255 - dab_roi
+        # DAB 通道已经是稳定灰度图: 灰度值越低 = 染色越深
+        gray = dab_roi
 
         # 背景掩膜 - 排除白色背景
         if self.rgb_image is not None:
@@ -921,8 +937,10 @@ class IHCScorer(QMainWindow):
                 'h_score': 0.0, 'positive_rate': 0.0,
                 'intensity_score': 0, 'intensity_label': '阴性',
                 'intensity_basis': '未检测到有效组织区域',
+                'mean_positive_gray': None,
                 'proportion_score': 0, 'ihc_score': 0,
-                'clinical': '阴性 [-]',
+                'clinical': 'Negative',
+                'clinical_detail': '阴性 [-]',
                 'total_pixels': int(dab_roi.size), 'tissue_pixels': 0,
                 'background_pixels': int(dab_roi.size),
                 'area_info': area_info
@@ -955,23 +973,9 @@ class IHCScorer(QMainWindow):
         h_score = 1 * pct_low + 2 * pct_pos + 3 * pct_high
 
         # ── 染色强度评分 (Intensity Score, 0-3) ──
-        # 按标准分级定义，取阳性像素中占比最高的染色等级作为主导强度。
-        # 若多档位占比相同，则优先取更高强度。
-        positive_counts = [
-            ('high_pos', n_high, 3, '强阳性'),
-            ('positive', n_pos, 2, '阳性'),
-            ('low_pos', n_low, 1, '弱阳性'),
-        ]
-        dominant_positive = next((item for item in positive_counts if item[1] > 0), None)
-        if positive_rate <= 0 or dominant_positive is None:
-            intensity_score = 0
-            intensity_label = '阴性'
-            intensity_basis = '未检测到阳性像素'
-        else:
-            dominant_positive = max(positive_counts, key=lambda item: (item[1], item[2]))
-            intensity_score = dominant_positive[2]
-            intensity_label = dominant_positive[3]
-            intensity_basis = f"主导阳性等级: {intensity_label}"
+        intensity_score, intensity_label, intensity_basis, mean_positive_gray = (
+            self._score_intensity_from_gray(gray, high_mask, pos_mask, low_mask)
+        )
 
         # ── 阳性比例评分 (Proportion Score, 0-4) ──
         if positive_rate <= 0:
@@ -989,14 +993,19 @@ class IHCScorer(QMainWindow):
         ihc_score = intensity_score * proportion_score
 
         # ── 临床判定 ──
-        if ihc_score == 0:
-            clinical = "阴性 [-]"
+        # 批量结果按阳性率做二分类，更接近常见 IHC 汇总表的 Positive / Negative 输出。
+        if positive_rate < self.CLINICAL_POSITIVE_THRESHOLD:
+            clinical = "Negative"
+            clinical_detail = "阴性 [-]"
         elif ihc_score <= 3:
-            clinical = "弱阳性 [+]"
+            clinical = "Positive"
+            clinical_detail = "弱阳性 [+]"
         elif ihc_score <= 6:
-            clinical = "阳性 [++]"
+            clinical = "Positive"
+            clinical_detail = "阳性 [++]"
         else:
-            clinical = "强阳性 [+++]"
+            clinical = "Positive"
+            clinical_detail = "强阳性 [+++]"
 
         return {
             'negative': pct_neg, 'low_pos': pct_low,
@@ -1005,9 +1014,11 @@ class IHCScorer(QMainWindow):
             'intensity_score': intensity_score,
             'intensity_label': intensity_label,
             'intensity_basis': intensity_basis,
+            'mean_positive_gray': mean_positive_gray,
             'proportion_score': proportion_score,
             'ihc_score': ihc_score,
             'clinical': clinical,
+            'clinical_detail': clinical_detail,
             'total_pixels': int(dab_roi.size),
             'tissue_pixels': int(total_tissue),
             'background_pixels': int(dab_roi.size - total_tissue),
@@ -1028,6 +1039,7 @@ class IHCScorer(QMainWindow):
 {'='*42}
   文件: {os.path.basename(self.current_file)}
   区域: {results['area_info']}
+  总像素: {results['total_pixels']:,} px
   组织像素: {results['tissue_pixels']:,} px
   背景像素: {results['background_pixels']:,} px
 {'_'*42}
@@ -1044,7 +1056,7 @@ class IHCScorer(QMainWindow):
   阳性率: {results['positive_rate']:6.1f}%
   IHC评分: {results['ihc_score']:>2d}  (0-12)
 {'='*42}
-  判定: {results['clinical']}
+  判定: {results['clinical_detail']}
 {'='*42}"""
 
         self.result_text.setPlainText(text)
@@ -1057,7 +1069,7 @@ class IHCScorer(QMainWindow):
 
         self.statusBar().showMessage(
             f"IHC评分={results['ihc_score']} | "
-            f"{results['clinical']} | "
+            f"{results['clinical_detail']} | "
             f"H-Score={results['h_score']:.1f}"
         )
 
@@ -1121,9 +1133,9 @@ class IHCScorer(QMainWindow):
         if roi and not roi.isNull():
             x, y, w, h = roi.x(), roi.y(), roi.width(), roi.height()
             x, y = max(0, x), max(0, y)
-            data = 255 - self.dab_channel[y:y+h, x:x+w]
+            data = self.dab_channel[y:y+h, x:x+w]
         else:
-            data = 255 - self.dab_channel
+            data = self.dab_channel
 
         # 灰度值阈值线: High+, Positive, Low+
         thresholds = [
@@ -1229,17 +1241,7 @@ class IHCScorer(QMainWindow):
             if self.chk_auto_balance.isChecked():
                 rgb = self._white_balance(rgb)
 
-            stain_name = self.stain_combo.currentText()
-            if stain_name == "H-DAB (skimage)":
-                img_float = rgb.astype(np.float64) / 255.0
-                img_float = np.clip(img_float, 1e-6, 1.0)
-                hed = rgb2hed(img_float)
-                dab = hed[:, :, 2]
-                dab = np.clip(dab, 0, None)
-                dab = (dab / (dab.max() + 1e-6) * 255).astype(np.uint8)
-            else:
-                stain_matrix = STAIN_VECTORS[stain_name]
-                _, dab = self._color_deconvolution(rgb, stain_matrix)
+            _, dab = self._extract_stain_channels(rgb)
 
             # 临时设置图像用于计算
             old_rgb = self.rgb_image
@@ -1272,25 +1274,20 @@ class IHCScorer(QMainWindow):
                 with open(path, 'w', newline='', encoding='utf-8-sig') as f:
                     writer = csv.writer(f)
                     writer.writerow([
-                        '文件', '阴性%', '弱阳性%', '阳性%', '强阳性%',
-                        '强度评分(0-3)', '比例评分(0-4)', 'IHC评分(0-12)',
-                        'H-Score', '阳性率%', '判定',
-                        '组织像素', '区域'
+                        '图片名称', '总像素', '高强阳(%)', '中阳(%)', '低阳(%)',
+                        '阴性(%)', '临床判定', '强度评分', '比例评分', 'IHC评分'
                     ])
                     writer.writerow([
                         os.path.basename(self.current_file),
-                        f"{results['negative']:.2f}",
-                        f"{results['low_pos']:.2f}",
-                        f"{results['positive']:.2f}",
+                        results['total_pixels'],
                         f"{results['high_pos']:.2f}",
+                        f"{results['positive']:.2f}",
+                        f"{results['low_pos']:.2f}",
+                        f"{results['negative']:.2f}",
+                        results['clinical'],
                         results['intensity_score'],
                         results['proportion_score'],
                         results['ihc_score'],
-                        f"{results['h_score']:.2f}",
-                        f"{results['positive_rate']:.2f}",
-                        results['clinical'],
-                        results['tissue_pixels'],
-                        results['area_info'],
                     ])
                 self.statusBar().showMessage(f"结果已导出: {path}")
         else:
