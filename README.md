@@ -10,9 +10,10 @@ A desktop application for Immunohistochemistry (IHC) scoring analysis, built wit
 - **ROI Selection** — Draw a region of interest for localized scoring
 - **H-Score Calculation** — `1 × Low+% + 2 × Pos% + 3 × High+%` (range 0–300)
 - **IHC Score** — `Intensity Score × Proportion Score` (range 0–12)
-- **Batch Analysis** — Open an entire folder and analyze all images at once with CSV export
+- **Batch Analysis** — Open a folder, analyze all images at once, results cached for instant browsing
+- **Image Navigation** — Browse images with toolbar arrows, side-panel arrows, or click table rows
 - **Visualization** — Original image, positive region (HSV masked), preprocessed image, and color-coded score overlay
-- **Bilingual UI** — Switch between Chinese and English with one click
+- **Bilingual UI** — Switch between Chinese and English with one click (Times New Roman for English)
 - **TIFF Support** — Enhanced TIFF loading via Pillow with cv2 fallback; handles Unicode file paths
 - **Cross-Platform** — Runs on macOS and Windows; automated builds via GitHub Actions
 
@@ -121,10 +122,11 @@ python3 ihc_scorer.py
 ## Usage
 
 1. Click **Open Image** or **Open Folder** to load IHC stained images
-2. Adjust thresholds if needed (or use presets: Standard / Strict / Loose)
-3. Click **Analyze** for single image, or **Batch Analyze** for the whole folder
-4. Optionally select an ROI for localized analysis
-5. Export results as CSV or save the score overlay image
+2. Click **Analyze** for single image, or **Batch Analyze** for the whole folder
+3. Use **◀ ▶ arrows** (toolbar or image sides) to browse images — analysis results switch automatically
+4. Click any **table row** to jump to that image
+5. Optionally select an **ROI** for localized analysis
+6. **Export** results as CSV or save the score overlay image
 
 ### Keyboard Shortcuts
 
@@ -147,8 +149,8 @@ pyinstaller --onefile --windowed --name "IHC_Score_Analyzer" --noconfirm ihc_sco
 Cross-platform builds are automated via GitHub Actions (`.github/workflows/build.yml`). Push a version tag to trigger:
 
 ```bash
-git tag v1.6.0
-git push github v1.6.0
+git tag v1.7.0
+git push github v1.7.0
 ```
 
 ## Project Structure
