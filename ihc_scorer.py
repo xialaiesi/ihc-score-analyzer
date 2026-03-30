@@ -546,12 +546,12 @@ class IHCScorer(QMainWindow):
 
         toolbar.addSeparator()
 
-        self.btn_roi = QPushButton("✂️ 选择ROI")
+        self.btn_roi = QPushButton("[+] 选择ROI")
         self.btn_roi.setCheckable(True)
         self.btn_roi.toggled.connect(self._toggle_roi_mode)
         toolbar.addWidget(self.btn_roi)
 
-        self.btn_clear_roi = QPushButton("↩️ 清除ROI")
+        self.btn_clear_roi = QPushButton("[x] 清除ROI")
         self.btn_clear_roi.clicked.connect(self._clear_roi)
         toolbar.addWidget(self.btn_clear_roi)
 
@@ -971,7 +971,8 @@ class IHCScorer(QMainWindow):
             area_info = f"ROI({x},{y},{w}x{h})"
         else:
             gray = dab
-            area_info = "全图"
+            is_en = hasattr(self, 'lang') and self.lang is self.LANG_EN
+            area_info = "Full Image" if is_en else "全图"
 
         total_pixels = int(gray.size)
 
@@ -979,12 +980,13 @@ class IHCScorer(QMainWindow):
             return {
                 'negative': 100.0, 'low_pos': 0.0, 'positive': 0.0, 'high_pos': 0.0,
                 'h_score': 0.0, 'positive_rate': 0.0,
-                'intensity_score': 0, 'intensity_label': '阴性',
-                'intensity_basis': '无像素',
+                'intensity_score': 0,
+                'intensity_label': 'Negative' if (hasattr(self, 'lang') and self.lang is self.LANG_EN) else '阴性',
+                'intensity_basis': 'No pixels' if (hasattr(self, 'lang') and self.lang is self.LANG_EN) else '无像素',
                 'mean_positive_gray': None,
                 'proportion_score': 1, 'ihc_score': 0,
                 'clinical': 'Negative',
-                'clinical_detail': '阴性 [-]',
+                'clinical_detail': 'Negative [-]' if (hasattr(self, 'lang') and self.lang is self.LANG_EN) else '阴性 [-]',
                 'total_pixels': 0, 'tissue_pixels': 0,
                 'background_pixels': 0,
                 'area_info': area_info
@@ -1014,20 +1016,22 @@ class IHCScorer(QMainWindow):
         mean_intensity = float(np.mean(positive_gray)) if positive_gray.size else 0
 
         # 染色强度评分 (0-3)，使用同样的阈值
+        is_en = hasattr(self, 'lang') and self.lang is self.LANG_EN
         if mean_intensity < t_low:
             intensity_score = 0
-            intensity_label = '阴性'
+            intensity_label = 'Negative' if is_en else '阴性'
         elif mean_intensity < t_pos:
             intensity_score = 1
-            intensity_label = '弱阳性'
+            intensity_label = 'Low Positive' if is_en else '弱阳性'
         elif mean_intensity < t_high:
             intensity_score = 2
-            intensity_label = '阳性'
+            intensity_label = 'Positive' if is_en else '阳性'
         else:
             intensity_score = 3
-            intensity_label = '强阳性'
+            intensity_label = 'Strong Positive' if is_en else '强阳性'
 
-        intensity_basis = f"阳性区域平均灰度: {mean_intensity:.1f}"
+        intensity_basis = (f"Mean positive gray: {mean_intensity:.1f}"
+                           if is_en else f"阳性区域平均灰度: {mean_intensity:.1f}")
 
         # 阳性比例评分 (1-4)，基于 HSV 检测的 positive_ratio
         pos_pct = positive_ratio * 100
@@ -1046,16 +1050,16 @@ class IHCScorer(QMainWindow):
         # 临床判定
         if score_label == 'Negative':
             clinical = 'Negative'
-            clinical_detail = '阴性 [-]'
+            clinical_detail = 'Negative [-]' if is_en else '阴性 [-]'
         elif ihc_score <= 3:
             clinical = 'Positive'
-            clinical_detail = '弱阳性 [+]'
+            clinical_detail = 'Low Positive [+]' if is_en else '弱阳性 [+]'
         elif ihc_score <= 6:
             clinical = 'Positive'
-            clinical_detail = '阳性 [++]'
+            clinical_detail = 'Positive [++]' if is_en else '阳性 [++]'
         else:
             clinical = 'Positive'
-            clinical_detail = '强阳性 [+++]'
+            clinical_detail = 'Strong Positive [+++]' if is_en else '强阳性 [+++]'
 
         # 组织/背景像素统计
         tissue_pixels = int(np.sum(gray > 0))
@@ -1090,9 +1094,37 @@ class IHCScorer(QMainWindow):
         }
 
     def _display_results(self, results):
-        """显示评分结果"""
+        """显示评分结果（中英文）"""
         t_high, t_pos, t_low, _t_tissue = self._get_threshold_values()
-        text = f"""{'='*42}
+        is_en = self.lang is self.LANG_EN
+
+        if is_en:
+            text = f"""{'='*42}
+  IHC Scoring Report
+{'='*42}
+  File: {os.path.basename(self.current_file)}
+  Region: {results['area_info']}
+  Total Pixels: {results['total_pixels']:,} px
+  Tissue (HSV+): {results['tissue_pixels']:,} px
+  Background: {results['background_pixels']:,} px
+{'_'*42}
+  High Positive (>={t_high}): {results['high_pos']:6.1f}%
+  Positive ({t_pos}-{t_high - 1}): {results['positive']:6.1f}%
+  Low Positive ({t_low}-{t_pos - 1}): {results['low_pos']:6.1f}%
+  Negative (<{t_low}): {results['negative']:6.1f}%
+{'_'*42}
+  Intensity: {results['intensity_score']}  [{results['intensity_label']}]
+  Proportion: {results['proportion_score']}  (0-4)
+  Basis: {results['intensity_basis']}
+{'_'*42}
+  H-Score: {results['h_score']:6.1f} / 300
+  Positive Rate: {results['positive_rate']:6.1f}%
+  IHC Score: {results['ihc_score']:>2d}  (0-12)
+{'='*42}
+  Result: {results['clinical_detail']}
+{'='*42}"""
+        else:
+            text = f"""{'='*42}
   IHC 评分报告
 {'='*42}
   文件: {os.path.basename(self.current_file)}
@@ -1276,8 +1308,8 @@ class IHCScorer(QMainWindow):
         self.btn_folder.setText("📂 " + L['toolbar_folder'])
         self.btn_prev.setText("◀ " + L['toolbar_prev'])
         self.btn_next.setText(L['toolbar_next'] + " ▶")
-        self.btn_roi.setText("✂️ " + L['toolbar_roi'])
-        self.btn_clear_roi.setText("↩️ " + L['toolbar_clear_roi'])
+        self.btn_roi.setText("[+] " + L['toolbar_roi'])
+        self.btn_clear_roi.setText("[x] " + L['toolbar_clear_roi'])
         self.btn_analyze.setText("▶ " + L['toolbar_analyze'])
         self.btn_batch_analyze.setText("▶▶ " + L['toolbar_batch_analyze'])
         self.btn_export.setText("💾 " + L['toolbar_export'])
@@ -1324,6 +1356,11 @@ class IHCScorer(QMainWindow):
         self._update_threshold_info()
 
         self.statusBar().showMessage(L['status_ready'])
+
+        # 切换语言后，如果有分析结果，用新语言重新计算并刷新显示
+        if self.dab_channel is not None:
+            results = self._calculate_scores()
+            self._display_results(results)
 
     # ─── 图片导航 ──────────────────────────────────────────────────
     def _prev_image(self):
