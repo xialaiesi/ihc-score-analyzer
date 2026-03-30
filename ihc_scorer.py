@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
-IHC Score Analyzer - 免疫组化评分分析软件
-类似ImageJ的IHC评分工具，支持H-Score、阳性率计算、颜色反卷积等功能
+IHC Score Analyzer - Immunohistochemistry scoring software.
+An ImageJ-like IHC scoring tool supporting H-Score, positive rate calculation,
+and color deconvolution.
 """
 
 import sys
@@ -14,7 +15,7 @@ from PIL import Image
 import matplotlib
 from datetime import datetime
 
-# ─── 配置 matplotlib 中文字体 ─────────────────────────────────────
+# ─── Configure matplotlib Chinese fonts ───────────────────────────
 _system = platform.system()
 if _system == "Darwin":
     matplotlib.rcParams["font.sans-serif"] = ["PingFang HK", "Heiti TC", "Hiragino Sans GB", "STHeiti", "Arial Unicode MS"]
@@ -30,37 +31,19 @@ from PyQt5.QtWidgets import (
     QTabWidget, QTextEdit, QComboBox, QSpinBox, QDoubleSpinBox,
     QScrollArea, QMessageBox, QSplitter, QCheckBox, QStatusBar,
     QMenuBar, QAction, QToolBar, QSizePolicy, QTableWidget,
-    QTableWidgetItem, QHeaderView, QProgressBar, QFrame
+    QTableWidgetItem, QHeaderView, QProgressBar
 )
-from PyQt5.QtCore import Qt, QPoint, QRect, QSize, pyqtSignal, QTimer
+from PyQt5.QtCore import Qt, QPoint, QRect, QSize, pyqtSignal
 from PyQt5.QtGui import (
     QImage, QPixmap, QPainter, QPen, QColor, QFont, QIcon,
     QWheelEvent, QMouseEvent, QKeySequence, QCursor
 )
-from skimage.color import rgb2hed, hed2rgb
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 
 
-# ─── 颜色反卷积矩阵 ───────────────────────────────────────────────
-# H-DAB (Hematoxylin - DAB) 标准矩阵
-STAIN_VECTORS = {
-    "H-DAB": np.array([
-        [0.650, 0.704, 0.286],   # Hematoxylin
-        [0.268, 0.570, 0.776],   # DAB
-        [0.7110272, 0.42318153, 0.5615672]  # Residual
-    ]),
-    "H-E": np.array([
-        [0.644, 0.717, 0.267],   # Hematoxylin
-        [0.093, 0.954, 0.283],   # Eosin
-        [0.0, 0.0, 0.0]
-    ]),
-    "H-DAB (skimage)": None,  # 使用skimage内置的HED反卷积
-}
-
-
 class ImageCanvas(QLabel):
-    """可缩放、可平移、支持ROI选择的图像显示控件"""
+    """Zoomable, pannable image display widget with ROI selection."""
     roi_selected = pyqtSignal(QRect)
 
     def __init__(self):
@@ -83,7 +66,7 @@ class ImageCanvas(QLabel):
         self.setMouseTracking(True)
 
     def set_image(self, img_array, is_rgb=False):
-        """设置图像，is_rgb=True 表示输入已经是 RGB 格式，无需转换"""
+        """Set image; is_rgb=True means the input is already in RGB format."""
         if img_array is None:
             self._pixmap = None
             self.clear()
@@ -107,11 +90,6 @@ class ImageCanvas(QLabel):
         self._fit_to_view()
         self._update_display()
 
-    def set_pixmap_direct(self, pixmap):
-        self._pixmap = pixmap
-        self._fit_to_view()
-        self._update_display()
-
     def _fit_to_view(self):
         if self._pixmap is None:
             return
@@ -130,7 +108,7 @@ class ImageCanvas(QLabel):
             int(self._pixmap.height() * self._scale),
             Qt.KeepAspectRatio, Qt.SmoothTransformation
         )
-        # 绘制ROI
+        # Draw ROI overlay
         if self._current_roi and not self._current_roi.isNull():
             painter = QPainter(scaled)
             pen = QPen(QColor(255, 255, 0), 2, Qt.DashLine)
@@ -195,10 +173,10 @@ class ImageCanvas(QLabel):
             self._dragging = False
 
     def _widget_to_image(self, pos):
-        """将控件坐标转换为图像坐标"""
+        """Convert widget coordinates to image coordinates."""
         if self._pixmap is None:
             return QPoint(0, 0)
-        # 计算图像在控件中的偏移
+        # Calculate image offset within the widget
         sw = int(self._pixmap.width() * self._scale)
         sh = int(self._pixmap.height() * self._scale)
         ox = (self.width() - sw) // 2
@@ -216,7 +194,7 @@ class ImageCanvas(QLabel):
 
 
 class HistogramWidget(FigureCanvas):
-    """直方图显示控件"""
+    """Histogram display widget."""
     def __init__(self, parent=None):
         self.fig = Figure(figsize=(4, 2.5), dpi=80)
         self.fig.patch.set_facecolor('#2b2b2b')
@@ -250,7 +228,7 @@ class HistogramWidget(FigureCanvas):
 
 
 class ScorePieChart(FigureCanvas):
-    """饼图显示评分分布"""
+    """Pie chart for score distribution display."""
     def __init__(self, parent=None):
         self.fig = Figure(figsize=(3, 3), dpi=80)
         self.fig.patch.set_facecolor('#2b2b2b')
@@ -284,7 +262,7 @@ class ScorePieChart(FigureCanvas):
 
 
 class BatchResultTable(QTableWidget):
-    """批量分析结果表格"""
+    """Batch analysis results table."""
     def __init__(self):
         super().__init__()
         self.setColumnCount(11)
@@ -325,7 +303,7 @@ class BatchResultTable(QTableWidget):
         for col, text in enumerate(items):
             item = QTableWidgetItem(text)
             item.setTextAlignment(Qt.AlignCenter)
-            # 临床判定列用颜色标注
+            # Color-code the clinical determination column
             if col == 7:
                 if 'Positive' in text or '阳性' in text:
                     item.setForeground(QColor('#ffa726'))
@@ -335,10 +313,10 @@ class BatchResultTable(QTableWidget):
 
 
 class IHCScorer(QMainWindow):
-    """IHC评分分析主窗口"""
+    """IHC scoring analysis main window."""
     CLINICAL_POSITIVE_THRESHOLD = 5.0
 
-    # ── 中英文文本 ──
+    # ── Bilingual text ──
     LANG_ZH = {
         'title': 'IHC Score Analyzer - 免疫组化评分分析',
         'open': '打开图像(&O)', 'open_folder': '打开文件夹(&D)',
@@ -399,22 +377,22 @@ class IHCScorer(QMainWindow):
         self.setMinimumSize(1280, 800)
         self.resize(1440, 900)
 
-        # 数据
+        # Data
         self.original_image = None   # BGR
         self.rgb_image = None        # RGB
-        self.dab_channel = None      # DAB通道 (masked image grayscale)
-        self.hem_channel = None      # Hematoxylin通道 (preprocessed grayscale)
-        self.score_mask = None       # 评分掩膜
+        self.dab_channel = None      # DAB channel (masked image grayscale)
+        self.hem_channel = None      # Hematoxylin channel (preprocessed grayscale)
+        self.score_mask = None       # Score overlay mask
         self.current_file = ""
         self.batch_files = []
-        self.current_index = -1           # 当前图片索引
-        self.batch_results_cache = {}     # {index: results_dict} 批量分析结果缓存
+        self.current_index = -1           # Current image index
+        self.batch_results_cache = {}     # {index: results_dict} batch analysis result cache
         self.batch_image_cache = {}       # {index: (rgb, preprocessed, masked, mask, dab_gray, pos_ratio)}
-        # tiff 逻辑新增
-        self.preprocessed_image = None  # CLAHE预处理后的RGB图像
-        self.masked_image = None        # HSV掩膜后的图像
-        self.hsv_mask = None            # HSV二值掩膜
-        self.positive_ratio = 0.0       # 阳性像素比例
+        # TIFF-workflow additions
+        self.preprocessed_image = None  # CLAHE-preprocessed RGB image
+        self.masked_image = None        # HSV-masked image
+        self.hsv_mask = None            # HSV binary mask
+        self.positive_ratio = 0.0       # Positive pixel ratio
         self.hsv_params = {
             'hue_low': 0, 'hue_high': 20,
             'saturation_low': 50, 'value_low': 50
@@ -423,7 +401,7 @@ class IHCScorer(QMainWindow):
         self._init_ui()
         self._apply_dark_theme()
 
-        # 设置窗口图标
+        # Set window icon
         icon_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'icon.png')
         if os.path.exists(icon_path):
             self.setWindowIcon(QIcon(icon_path))
@@ -496,7 +474,7 @@ class IHCScorer(QMainWindow):
         """)
 
     def _init_ui(self):
-        # ── 菜单栏 ──
+        # ── Menu bar ──
         menubar = self.menuBar()
         file_menu = menubar.addMenu("文件(&F)")
 
@@ -522,7 +500,7 @@ class IHCScorer(QMainWindow):
         self.act_save_img.triggered.connect(self.save_analysis_image)
         file_menu.addAction(self.act_save_img)
 
-        # ── 工具栏 ──
+        # ── Toolbar ──
         toolbar = QToolBar("工具栏")
         toolbar.setIconSize(QSize(20, 20))
         self.addToolBar(toolbar)
@@ -588,7 +566,7 @@ class IHCScorer(QMainWindow):
         self.btn_lang.clicked.connect(self._toggle_language)
         toolbar.addWidget(self.btn_lang)
 
-        # ── 主布局 ──
+        # ── Main layout ──
         central = QWidget()
         self.setCentralWidget(central)
         main_layout = QHBoxLayout(central)
@@ -598,12 +576,12 @@ class IHCScorer(QMainWindow):
         splitter = QSplitter(Qt.Horizontal)
         main_layout.addWidget(splitter)
 
-        # ── 左侧: 图像显示区 ──
+        # ── Left side: image display area ──
         left_widget = QWidget()
         left_layout = QVBoxLayout(left_widget)
         left_layout.setContentsMargins(0, 0, 0, 0)
 
-        # 图像区域 + 两侧箭头
+        # Image area + side navigation arrows
         image_area = QWidget()
         image_h_layout = QHBoxLayout(image_area)
         image_h_layout.setContentsMargins(0, 0, 0, 0)
@@ -653,7 +631,7 @@ class IHCScorer(QMainWindow):
         left_layout.addWidget(image_area)
         splitter.addWidget(left_widget)
 
-        # ── 右侧: 控制面板 ──
+        # ── Right side: control panel ──
         right_widget = QWidget()
         right_widget.setMinimumWidth(300)
         right_layout = QVBoxLayout(right_widget)
@@ -665,7 +643,7 @@ class IHCScorer(QMainWindow):
         right_inner = QWidget()
         right_inner_layout = QVBoxLayout(right_inner)
 
-        # ── 隐藏的控件（保留引用以兼容其他代码） ──
+        # Hidden controls (kept for language-switch compatibility)
         self.grp_deconv = QGroupBox()
         self.lbl_stain = QLabel()
         self.stain_combo = QComboBox()
@@ -702,7 +680,7 @@ class IHCScorer(QMainWindow):
         self.grp_hist = QGroupBox()
         self.histogram = HistogramWidget()
 
-        # ── 评分结果（自适应填充整个右侧面板） ──
+        # ── Scoring results (fills the entire right panel) ──
         self.grp_result = QGroupBox("评分结果")
         result_layout = QVBoxLayout()
 
@@ -713,10 +691,10 @@ class IHCScorer(QMainWindow):
         self.result_text = QTextEdit()
         self.result_text.setReadOnly(True)
         self.result_text.setFont(QFont("Times New Roman", 13))
-        result_layout.addWidget(self.result_text, 1)  # stretch=1 自适应
+        result_layout.addWidget(self.result_text, 1)  # stretch=1 auto-fill
 
         self.grp_result.setLayout(result_layout)
-        right_inner_layout.addWidget(self.grp_result, 1)  # stretch=1 填满
+        right_inner_layout.addWidget(self.grp_result, 1)  # stretch=1 fill
 
         right_scroll.setWidget(right_inner)
         right_layout.addWidget(right_scroll)
@@ -724,7 +702,7 @@ class IHCScorer(QMainWindow):
 
         splitter.setSizes([900, 400])
 
-        # ── 底部: 批量结果标签页（可拖拽缩放） ──
+        # ── Bottom: batch results tab (resizable via splitter) ──
         self.batch_tab = QTabWidget()
         self.batch_table = BatchResultTable()
         self.batch_table.cellClicked.connect(self._on_table_row_clicked)
@@ -732,7 +710,7 @@ class IHCScorer(QMainWindow):
         self.batch_tab.setMinimumHeight(80)
         self.batch_tab.hide()
 
-        # 垂直分割器：上方图像+控制面板，下方批量表格
+        # Vertical splitter: image + control panel on top, batch table below
         vsplitter = QSplitter(Qt.Vertical)
         upper_widget = QWidget()
         upper_widget.setLayout(main_layout)
@@ -748,7 +726,7 @@ class IHCScorer(QMainWindow):
         outer_widget.setLayout(outer_layout)
         self.setCentralWidget(outer_widget)
 
-        # ── 状态栏 ──
+        # ── Status bar ──
         self.statusBar().showMessage("就绪 - 请打开一张IHC染色图像开始分析")
         self.progress_bar = QProgressBar()
         self.progress_bar.setMaximumWidth(200)
@@ -756,7 +734,7 @@ class IHCScorer(QMainWindow):
         self.statusBar().addPermanentWidget(self.progress_bar)
         self._on_threshold_changed()
 
-    # ─── 文件操作 ─────────────────────────────────────────────────
+    # ─── File operations ────────────────────────────────────────────
     def open_image(self):
         path, _ = QFileDialog.getOpenFileName(
             self, "打开IHC图像", "",
@@ -764,18 +742,6 @@ class IHCScorer(QMainWindow):
         )
         if path:
             self._load_image(path)
-
-    def batch_open(self):
-        paths, _ = QFileDialog.getOpenFileNames(
-            self, "批量打开IHC图像", "",
-            "图像文件 (*.png *.jpg *.jpeg *.tif *.tiff *.bmp);;所有文件 (*)"
-        )
-        if paths:
-            self.batch_files = paths
-            self.current_index = 0
-            self._load_image(paths[0])
-            self._update_nav_label()
-            self.statusBar().showMessage(f"已加载 {len(paths)} 张图像, 点击[批量分析]开始")
 
     def open_folder(self):
         folder = QFileDialog.getExistingDirectory(self, "选择图像文件夹", "")
@@ -798,7 +764,7 @@ class IHCScorer(QMainWindow):
 
     @staticmethod
     def _imread_unicode(path):
-        """防御式加载：优先 Pillow（更好的 TIFF 支持），回退 cv2"""
+        """Defensive image loader: prefer Pillow (better TIFF support), fall back to cv2."""
         img = None
         try:
             pil_img = Image.open(path)
@@ -826,67 +792,49 @@ class IHCScorer(QMainWindow):
         self.canvas_original.set_image(self.rgb_image, is_rgb=True)
         self.canvas_original.clear_roi()
 
-        # 自动进行预处理 + HSV检测
+        # Auto-run preprocessing + HSV detection
         self._perform_deconvolution()
 
         self.setWindowTitle(f"IHC Score Analyzer - {os.path.basename(path)}")
         self.statusBar().showMessage(f"已加载: {path}  |  尺寸: {img.shape[1]}×{img.shape[0]}")
 
-    # ─── 预处理 + HSV 阳性检测（复刻 tiff 逻辑） ──────────────────
+    # ─── Preprocessing + HSV positive detection ────────────────────
     def _perform_deconvolution(self):
-        """预处理 + HSV 阳性区域检测（遵循 tiff/ihc_gui.py 的 IHCAnalyzer 逻辑）"""
+        """Preprocessing + HSV positive region detection (follows tiff/ihc_gui.py IHCAnalyzer logic)."""
         if self.rgb_image is None:
             return
 
-        # ── Step 1: 预处理 (GaussianBlur + CLAHE on LAB L-channel) ──
-        blurred = cv2.GaussianBlur(self.rgb_image, (3, 3), 0)
-        lab = cv2.cvtColor(blurred, cv2.COLOR_RGB2LAB)
-        l_ch, a_ch, b_ch = cv2.split(lab)
-        clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
-        cl = clahe.apply(l_ch)
-        self.preprocessed_image = cv2.cvtColor(cv2.merge((cl, a_ch, b_ch)), cv2.COLOR_LAB2RGB)
+        # Step 1: Preprocessing (GaussianBlur + CLAHE on LAB L-channel)
+        self.preprocessed_image = self._preprocess_rgb(self.rgb_image)
 
-        # ── Step 2: HSV 阳性区域检测 ──
-        hsv = cv2.cvtColor(self.preprocessed_image, cv2.COLOR_RGB2HSV)
-        lower = np.array([self.hsv_params['hue_low'],
-                          self.hsv_params['saturation_low'],
-                          self.hsv_params['value_low']])
-        upper = np.array([self.hsv_params['hue_high'], 255, 255])
-        mask = cv2.inRange(hsv, lower, upper)
-        kernel = np.ones((3, 3), np.uint8)
-        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
-        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
-
+        # Step 2: HSV positive region detection (delegates to static method)
+        mask, self.masked_image, self.positive_ratio = self._detect_positive_hsv(
+            self.preprocessed_image, self.hsv_params)
         self.hsv_mask = mask
-        self.masked_image = cv2.bitwise_and(
-            self.preprocessed_image, self.preprocessed_image, mask=mask)
-        total_pixels = mask.size
-        positive_pixels = cv2.countNonZero(mask)
-        self.positive_ratio = positive_pixels / total_pixels if total_pixels else 0
 
-        # ── 为分析生成灰度通道 ──
+        # Generate grayscale channels for analysis
         self.dab_channel = cv2.cvtColor(self.masked_image, cv2.COLOR_RGB2GRAY)
         self.hem_channel = cv2.cvtColor(self.preprocessed_image, cv2.COLOR_RGB2GRAY)
 
-        # ── 显示通道图像 ──
-        # DAB通道: 直接显示阳性区域（彩色，非阳性为黑色）
+        # Display channel images
+        # DAB channel: show positive regions (color, non-positive is black)
         self.canvas_dab.set_image(self.masked_image, is_rgb=True)
-        # Hematoxylin通道: 显示预处理后的图像
+        # Hematoxylin channel: show preprocessed image
         self.canvas_hem.set_image(self.preprocessed_image, is_rgb=True)
 
-        # 状态栏显示检测结果
+        # Show detection results in status bar
         pos_count = cv2.countNonZero(mask)
         self.statusBar().showMessage(
             f"HSV检测: 阳性像素 {pos_count:,} / {mask.size:,} "
             f"({self.positive_ratio * 100:.1f}%)"
         )
 
-        # 更新直方图
+        # Update histogram
         self._update_histogram()
 
     @staticmethod
     def _preprocess_rgb(rgb):
-        """对 RGB 图像执行 GaussianBlur + CLAHE 预处理（批量分析用）"""
+        """Apply GaussianBlur + CLAHE preprocessing to an RGB image (used for batch analysis)."""
         blurred = cv2.GaussianBlur(rgb, (3, 3), 0)
         lab = cv2.cvtColor(blurred, cv2.COLOR_RGB2LAB)
         l_ch, a_ch, b_ch = cv2.split(lab)
@@ -896,7 +844,7 @@ class IHCScorer(QMainWindow):
 
     @staticmethod
     def _detect_positive_hsv(preprocessed_rgb, params):
-        """HSV 阳性区域检测，返回 (mask, masked_image, positive_ratio)"""
+        """HSV positive region detection; returns (mask, masked_image, positive_ratio)."""
         hsv = cv2.cvtColor(preprocessed_rgb, cv2.COLOR_RGB2HSV)
         lower = np.array([params['hue_low'], params['saturation_low'], params['value_low']])
         upper = np.array([params['hue_high'], 255, 255])
@@ -911,7 +859,7 @@ class IHCScorer(QMainWindow):
         return mask, masked_image, positive_ratio
 
     def _get_threshold_values(self):
-        """获取并规范化当前灰度阈值"""
+        """Get and normalize current grayscale thresholds."""
         t_high = self.slider_strong.value()
         t_pos = self.slider_moderate.value()
         t_low = self.slider_weak.value()
@@ -919,7 +867,7 @@ class IHCScorer(QMainWindow):
         return t_high, t_pos, t_low, t_tissue
 
     def _update_threshold_info(self):
-        """更新阈值说明文本（HSV检测 + 灰度强度分级）"""
+        """Update threshold info text (HSV detection + grayscale intensity grading)."""
         t_high, t_pos, t_low, t_tissue = self._get_threshold_values()
         if self.lang is self.LANG_ZH:
             self.threshold_info_label.setText(
@@ -934,7 +882,7 @@ class IHCScorer(QMainWindow):
                 f"Low+({t_low}-{t_pos - 1}) | Neg(<{t_low})"
             )
 
-    # ─── 分析 ─────────────────────────────────────────────────────
+    # ─── Analysis ─────────────────────────────────────────────────
     def analyze_current(self):
         if self.dab_channel is None:
             QMessageBox.warning(self, "提示", "请先打开一张IHC染色图像")
@@ -944,25 +892,25 @@ class IHCScorer(QMainWindow):
         self._create_score_overlay(results)
 
     def _calculate_scores(self, dab=None, roi=None, positive_ratio=None, thresholds=None):
-        """计算IHC评分（复刻 tiff/ihc_gui.py 的 IHCAnalyzer 逻辑）
-        - 基于 masked image 灰度分级，阈值由滑块控制
-        - 灰度值越高 = 在阳性区域内染色越强
-        - thresholds: (t_high, t_pos, t_low) 三个灰度阈值
+        """Calculate IHC scores (mirrors tiff/ihc_gui.py IHCAnalyzer logic).
+        - Grayscale grading on masked image, thresholds controlled by sliders
+        - Higher grayscale = stronger staining within positive regions
+        - thresholds: (t_high, t_pos, t_low) three grayscale thresholds
         """
         if dab is None:
             dab = self.dab_channel
         if positive_ratio is None:
             positive_ratio = self.positive_ratio
 
-        # 读取阈值：优先用传入值，否则读取滑块
+        # Read thresholds: prefer passed values, otherwise read from sliders
         if thresholds:
             t_high, t_pos, t_low = thresholds
         else:
-            t_high = self.slider_strong.value()    # 强阳性阈值 (>=)
-            t_pos = self.slider_moderate.value()    # 阳性阈值 (>=)
-            t_low = self.slider_weak.value()        # 弱阳性阈值 (>=)
+            t_high = self.slider_strong.value()    # High positive threshold (>=)
+            t_pos = self.slider_moderate.value()    # Positive threshold (>=)
+            t_low = self.slider_weak.value()        # Low positive threshold (>=)
 
-        # 获取分析区域
+        # Get analysis region
         if roi is None:
             roi = self.canvas_original.get_roi()
 
@@ -997,8 +945,8 @@ class IHCScorer(QMainWindow):
                 'area_info': area_info
             }
 
-        # ── 强度分级（使用滑块阈值）──
-        # masked image 中: 被掩膜排除的像素 = 0(黑色), 阳性像素保留原灰度
+        # ── Intensity grading (using slider thresholds) ──
+        # In masked image: excluded pixels = 0 (black), positive pixels retain original grayscale
         n_high = int(np.sum(gray >= t_high))
         n_pos  = int(np.sum((gray >= t_pos) & (gray < t_high)))
         n_low  = int(np.sum((gray >= t_low) & (gray < t_pos)))
@@ -1012,15 +960,15 @@ class IHCScorer(QMainWindow):
         total_pos = pct_high + pct_pos + pct_low
         score_label = 'Positive' if total_pos > 5 else 'Negative'
 
-        # H-Score (保留兼容)
+        # H-Score (kept for compatibility)
         h_score = 1 * pct_low + 2 * pct_pos + 3 * pct_high
 
-        # ── 临床评分（与 tiff IHCAnalyzer.calculate_clinical_scores 一致）──
-        # 阳性像素的平均灰度（gray > 0 排除被掩膜遮盖的黑色像素）
+        # ── Clinical scoring (matches tiff IHCAnalyzer.calculate_clinical_scores) ──
+        # Mean grayscale of positive pixels (gray > 0 excludes masked-out black pixels)
         positive_gray = gray[gray > 0]
         mean_intensity = float(np.mean(positive_gray)) if positive_gray.size else 0
 
-        # 染色强度评分 (0-3)，使用同样的阈值
+        # Staining intensity score (0-3), using the same thresholds
         is_en = hasattr(self, 'lang') and self.lang is self.LANG_EN
         if mean_intensity < t_low:
             intensity_score = 0
@@ -1038,7 +986,7 @@ class IHCScorer(QMainWindow):
         intensity_basis = (f"Mean positive gray: {mean_intensity:.1f}"
                            if is_en else f"阳性区域平均灰度: {mean_intensity:.1f}")
 
-        # 阳性比例评分 (1-4)，基于 HSV 检测的 positive_ratio
+        # Positive proportion score (1-4), based on HSV-detected positive_ratio
         pos_pct = positive_ratio * 100
         if pos_pct <= 25:
             proportion_score = 1
@@ -1049,10 +997,10 @@ class IHCScorer(QMainWindow):
         else:
             proportion_score = 4
 
-        # IHC 评分 = 强度 x 比例 (0-12)
+        # IHC score = intensity x proportion (0-12)
         ihc_score = intensity_score * proportion_score
 
-        # 临床判定
+        # Clinical determination
         if score_label == 'Negative':
             clinical = 'Negative'
             clinical_detail = 'Negative [-]' if is_en else '阴性 [-]'
@@ -1066,11 +1014,11 @@ class IHCScorer(QMainWindow):
             clinical = 'Positive'
             clinical_detail = 'Strong Positive [+++]' if is_en else '强阳性 [+++]'
 
-        # 组织/背景像素统计
+        # Tissue/background pixel statistics
         tissue_pixels = int(np.sum(gray > 0))
         background_pixels = int(np.sum(gray == 0))
 
-        # 分级掩膜（用于叠加显示，使用同样的阈值）
+        # Grading masks (for overlay display, using the same thresholds)
         high_mask = (gray >= t_high)
         pos_mask  = (gray >= t_pos) & (gray < t_high)
         low_mask  = (gray >= t_low) & (gray < t_pos)
@@ -1099,7 +1047,7 @@ class IHCScorer(QMainWindow):
         }
 
     def _display_results(self, results):
-        """显示评分结果（中英文）"""
+        """Display scoring results (bilingual)."""
         t_high, t_pos, t_low, _t_tissue = self._get_threshold_values()
         is_en = self.lang is self.LANG_EN
 
@@ -1156,7 +1104,7 @@ class IHCScorer(QMainWindow):
 
         self.result_text.setPlainText(text)
 
-        # 更新饼图
+        # Update pie chart
         pie_lang = 'zh' if self.lang is self.LANG_ZH else 'en'
         self.pie_chart.plot_scores(
             results['negative'], results['low_pos'],
@@ -1170,8 +1118,9 @@ class IHCScorer(QMainWindow):
         )
 
     def _create_score_overlay(self, results):
-        """创建评分叠加图像
-        只对 HSV 检测到的阳性区域按强度着色，非阳性区域保持原图半透明显示。
+        """Create score overlay image.
+        Only colorize HSV-detected positive regions by intensity; non-positive
+        regions are shown dimmed from the original image.
         """
         if 'masks' not in results or self.rgb_image is None:
             return
@@ -1190,38 +1139,38 @@ class IHCScorer(QMainWindow):
             overlay = self.rgb_image.copy()
             hsv_mask_roi = self.hsv_mask
 
-        # HSV 阳性区域内：按强度分级着色
+        # Colorize positive regions by intensity grade
         alpha = 0.45
 
-        # Low Positive - 绿色 (仅 HSV 阳性区域内)
+        # Low Positive - green (within HSV positive regions only)
         overlay[masks['low_pos']] = (
             overlay[masks['low_pos']] * (1 - alpha) +
             np.array([102, 187, 106]) * alpha
         ).astype(np.uint8)
 
-        # Positive - 橙色
+        # Positive - orange
         overlay[masks['positive']] = (
             overlay[masks['positive']] * (1 - alpha) +
             np.array([255, 167, 38]) * alpha
         ).astype(np.uint8)
 
-        # High Positive - 红色
+        # High Positive - red
         overlay[masks['high_pos']] = (
             overlay[masks['high_pos']] * (1 - alpha) +
             np.array([239, 83, 80]) * alpha
         ).astype(np.uint8)
 
-        # 非阳性区域（未被 HSV 检测到的）：略微压暗以突出阳性区域
+        # Non-positive regions (not detected by HSV): dim slightly to highlight positive areas
         if hsv_mask_roi is not None:
             non_positive = (hsv_mask_roi == 0)
             overlay[non_positive] = (overlay[non_positive] * 0.7).astype(np.uint8)
 
         self.score_mask = overlay
         self.canvas_score.set_image(overlay, is_rgb=True)
-        self.image_tabs.setCurrentIndex(3)  # 切换到评分结果标签
+        self.image_tabs.setCurrentIndex(3)  # Switch to score overlay tab
 
     def _update_histogram(self):
-        """更新灰度直方图"""
+        """Update grayscale histogram."""
         if self.dab_channel is None:
             return
         roi = self.canvas_original.get_roi()
@@ -1232,7 +1181,7 @@ class IHCScorer(QMainWindow):
         else:
             data = self.dab_channel
 
-        # 灰度值阈值线: High+, Positive, Low+
+        # Grayscale threshold lines: High+, Positive, Low+
         thresholds = [
             self.slider_strong.value(),   # High+ boundary
             self.slider_moderate.value(),  # Positive boundary
@@ -1243,15 +1192,14 @@ class IHCScorer(QMainWindow):
             thresholds, colors=['#ef5350', '#ffa726', '#66bb6a']
         )
 
-    # ─── 阈值变化 ─────────────────────────────────────────────────
+    # ─── Threshold changes ─────────────────────────────────────────
     def _on_threshold_changed(self):
-        # 确保阈值逻辑（降序）: 强阳性 > 阳性 > 弱阳性
-        # 强阳性阈值最高，弱阳性阈值最低
-        s = max(self.slider_strong.value(), 2)   # 强阳性 >= (最高)
-        m = self.slider_moderate.value()          # 阳性 >=
-        w = self.slider_weak.value()              # 弱阳性 >= (最低)
+        # Ensure descending threshold order: high+ > positive > low+
+        s = max(self.slider_strong.value(), 2)   # High positive >= (highest)
+        m = self.slider_moderate.value()          # Positive >=
+        w = self.slider_weak.value()              # Low positive >= (lowest)
 
-        # 保证 strong > moderate > weak >= 1
+        # Enforce strong > moderate > weak >= 1
         if m >= s:
             m = s - 1
         if m < 1:
@@ -1283,7 +1231,7 @@ class IHCScorer(QMainWindow):
         self._update_histogram()
 
     def _set_thresholds(self, high, pos, low):
-        # 先屏蔽信号，设完三个再统一触发验证
+        # Block signals, set all three, then trigger validation once
         self.slider_strong.blockSignals(True)
         self.slider_moderate.blockSignals(True)
         self.slider_weak.blockSignals(True)
@@ -1295,7 +1243,7 @@ class IHCScorer(QMainWindow):
         self.slider_weak.blockSignals(False)
         self._on_threshold_changed()
 
-    # ─── 语言切换 ──────────────────────────────────────────────────
+    # ─── Language toggle ────────────────────────────────────────────
     def _toggle_language(self):
         if self.lang is self.LANG_ZH:
             self.lang = self.LANG_EN
@@ -1308,7 +1256,7 @@ class IHCScorer(QMainWindow):
         self.setWindowTitle(L['title'])
         self.btn_lang.setText("🌐 " + L['lang_switch'])
 
-        # 工具栏按钮
+        # Toolbar buttons
         self.btn_open.setText("📂 " + L['toolbar_open'])
         self.btn_folder.setText("📂 " + L['toolbar_folder'])
         self.btn_prev.setText("◀ " + L['toolbar_prev'])
@@ -1320,20 +1268,20 @@ class IHCScorer(QMainWindow):
         self.btn_export.setText("💾 " + L['toolbar_export'])
         self.btn_save_img.setText("🖼 " + L['toolbar_save'])
 
-        # 菜单项
+        # Menu items
         self.act_open.setText(L['open'])
         self.act_folder.setText(L['open_folder'])
         self.act_export.setText(L['export'])
         self.act_save_img.setText(L['save_img'])
 
-        # 右侧面板 - GroupBox 标题
+        # Right panel - GroupBox titles
         self.grp_deconv.setTitle(L['grp_deconv'])
         self.lbl_detect_info.setText(L['detect_info'])
         self.grp_thresh.setTitle(L['grp_thresh'])
         self.grp_hist.setTitle(L['grp_hist'])
         self.grp_result.setTitle(L['grp_result'])
 
-        # 右侧面板 - 标签
+        # Right panel - labels
         self.lbl_stain.setText(L['stain_label'])
         self.chk_auto_balance.setText(L['auto_wb'])
         self.lbl_high_tag.setText(L['lbl_high'])
@@ -1346,28 +1294,28 @@ class IHCScorer(QMainWindow):
         self.btn_preset_loose.setText(L['preset_loose'])
         self.lbl_bg_tag.setText(L['bg_label'])
 
-        # 图像标签页
+        # Image tabs
         self.image_tabs.setTabText(0, L['tab_original'])
         self.image_tabs.setTabText(1, L['tab_dab'])
         self.image_tabs.setTabText(2, L['tab_hem'])
         self.image_tabs.setTabText(3, L['tab_score'])
 
-        # 批量表格
+        # Batch table
         self.batch_tab.setTabText(0, L['batch_tab'])
         for col, header in enumerate(L['table_headers']):
             self.batch_table.setHorizontalHeaderItem(col, QTableWidgetItem(header))
 
-        # 刷新阈值说明文字
+        # Refresh threshold info text
         self._update_threshold_info()
 
         self.statusBar().showMessage(L['status_ready'])
 
-        # 切换语言后，如果有分析结果，用新语言重新计算并刷新显示
+        # After language switch, recalculate and redisplay results if available
         if self.dab_channel is not None:
             results = self._calculate_scores()
             self._display_results(results)
 
-    # ─── 图片导航 ──────────────────────────────────────────────────
+    # ─── Image navigation ──────────────────────────────────────────
     def _prev_image(self):
         if not self.batch_files or self.current_index <= 0:
             return
@@ -1381,11 +1329,11 @@ class IHCScorer(QMainWindow):
         self._navigate_to(self.current_index)
 
     def _navigate_to(self, index):
-        """切换到指定索引的图片，并自动恢复缓存的分析结果"""
+        """Navigate to the image at the given index and restore cached analysis results."""
         path = self.batch_files[index]
         self._update_nav_label()
 
-        # 如果有缓存的图像数据，直接恢复（避免重新加载和处理）
+        # If cached image data exists, restore directly (avoid reloading and reprocessing)
         if index in self.batch_image_cache:
             rgb, preprocessed, masked_img, mask, dab, pos_ratio = self.batch_image_cache[index]
             self.rgb_image = rgb
@@ -1398,7 +1346,7 @@ class IHCScorer(QMainWindow):
             self.positive_ratio = pos_ratio
             self.current_file = path
 
-            # 刷新所有图像面板
+            # Refresh all image panels
             self.canvas_original.set_image(rgb, is_rgb=True)
             self.canvas_dab.set_image(masked_img, is_rgb=True)
             self.canvas_hem.set_image(preprocessed, is_rgb=True)
@@ -1406,23 +1354,23 @@ class IHCScorer(QMainWindow):
 
             self.setWindowTitle(f"IHC Score Analyzer - {os.path.basename(path)}")
         else:
-            # 无缓存，正常加载
+            # No cache, load normally
             self._load_image(path)
 
-        # 如果有缓存的分析结果，自动显示评分
+        # If cached analysis results exist, auto-display scores
         if index in self.batch_results_cache:
             results = self.batch_results_cache[index]
             self._display_results(results)
             self._create_score_overlay(results)
 
-        # 高亮表格中对应的行
+        # Highlight corresponding row in the table
         if self.batch_table.rowCount() > index:
             self.batch_table.selectRow(index)
             self.batch_table.scrollToItem(
                 self.batch_table.item(index, 0))
 
     def _on_table_row_clicked(self, row, _col):
-        """点击表格某行时切换到对应图片"""
+        """Switch to the corresponding image when a table row is clicked."""
         if 0 <= row < len(self.batch_files):
             self.current_index = row
             self._navigate_to(row)
@@ -1434,7 +1382,7 @@ class IHCScorer(QMainWindow):
         else:
             self.lbl_image_index.setText("")
 
-    # ─── ROI ──────────────────────────────────────────────────────
+    # ─── ROI ─────────────────────────────────────────────────────
     def _toggle_roi_mode(self, checked):
         self.canvas_original.set_roi_mode(checked)
         self.canvas_dab.set_roi_mode(checked)
@@ -1455,7 +1403,7 @@ class IHCScorer(QMainWindow):
         self._update_histogram()
         self.statusBar().showMessage("已清除ROI选区")
 
-    # ─── 批量分析 ──────────────────────────────────────────────────
+    # ─── Batch analysis ────────────────────────────────────────────
     def batch_analyze(self):
         if not self.batch_files:
             QMessageBox.information(self, "提示", "请先通过[打开文件夹]加载图像")
@@ -1483,7 +1431,7 @@ class IHCScorer(QMainWindow):
 
             rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
 
-            # 预处理 + HSV 检测
+            # Preprocessing + HSV detection
             preprocessed = self._preprocess_rgb(rgb)
             mask, masked_img, pos_ratio = self._detect_positive_hsv(
                 preprocessed, self.hsv_params)
@@ -1495,7 +1443,7 @@ class IHCScorer(QMainWindow):
 
             results['filename'] = os.path.basename(path)
 
-            # 缓存结果和图像数据（供切换时使用）
+            # Cache results and image data (for navigation)
             self.batch_results_cache[i] = results
             self.batch_image_cache[i] = (rgb, preprocessed, masked_img, mask, dab, pos_ratio)
 
@@ -1507,14 +1455,14 @@ class IHCScorer(QMainWindow):
         n = len(self.batch_results_cache)
         self.statusBar().showMessage(f"批量分析完成: {n} 张图像")
 
-        # 自动跳转到第一张并显示其分析结果
+        # Auto-navigate to the first image and display its analysis results
         if self.batch_files:
             self.current_index = 0
             self._navigate_to(0)
 
-    # ─── 导出 ─────────────────────────────────────────────────────
+    # ─── Export ───────────────────────────────────────────────────
     def _csv_headers(self):
-        """根据当前语言返回 CSV 表头"""
+        """Return CSV headers based on the current language."""
         if self.lang is self.LANG_EN:
             return ['Filename', 'Total Pixels', 'High+(%)', 'Pos(%)', 'Low+(%)',
                     'Neg(%)', 'Clinical', 'Intensity', 'Proportion', 'IHC Score']
@@ -1524,7 +1472,7 @@ class IHCScorer(QMainWindow):
     def export_results(self):
         is_en = self.lang is self.LANG_EN
         if self.batch_table.rowCount() == 0:
-            # 只有单张图像结果
+            # Single image result only
             if self.dab_channel is None:
                 msg = "No results to export" if is_en else "没有可导出的结果"
                 QMessageBox.information(self, "Info" if is_en else "提示", msg)
@@ -1554,7 +1502,7 @@ class IHCScorer(QMainWindow):
                 msg = f"Exported: {path}" if is_en else f"结果已导出: {path}"
                 self.statusBar().showMessage(msg)
         else:
-            # 批量结果
+            # Batch results
             dlg_title = "Export Batch Results" if is_en else "导出批量结果"
             dlg_filter = "CSV Files (*.csv)" if is_en else "CSV文件 (*.csv)"
             path, _ = QFileDialog.getSaveFileName(
@@ -1603,7 +1551,7 @@ def main():
     app = QApplication(sys.argv)
     app.setApplicationName("IHC Score Analyzer")
 
-    # 高DPI支持
+    # High DPI support
     app.setAttribute(Qt.AA_EnableHighDpiScaling, True)
     app.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
 
