@@ -10,7 +10,7 @@ import csv
 import platform
 import numpy as np
 import cv2
-import imageio
+from PIL import Image
 import matplotlib
 from datetime import datetime
 
@@ -791,18 +791,13 @@ class IHCScorer(QMainWindow):
 
     @staticmethod
     def _imread_unicode(path):
-        """防御式加载：优先 imageio（更好的 TIFF 支持），回退 cv2"""
+        """防御式加载：优先 Pillow（更好的 TIFF 支持），回退 cv2"""
         img = None
         try:
-            img = imageio.imread(path)
-            if img is None:
-                raise ValueError("imageio.imread returned None")
-            if img.ndim == 2:
-                img = cv2.cvtColor(img, cv2.COLOR_GRAY2RGB)
-            elif img.shape[2] == 4:
-                img = cv2.cvtColor(img, cv2.COLOR_RGBA2RGB)
-            # imageio 返回 RGB，转为 BGR 以兼容后续流程
-            img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
+            pil_img = Image.open(path)
+            pil_img.load()
+            pil_img = pil_img.convert('RGB')
+            img = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
         except Exception:
             try:
                 data = np.fromfile(path, dtype=np.uint8)

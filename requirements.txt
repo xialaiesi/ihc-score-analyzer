@@ -2,7 +2,6 @@ PyQt5
 opencv-python-headless
 numpy
 scikit-image
-imageio
 matplotlib
 Pillow
 pyinstaller

@@ -1,6 +1,6 @@
 # IHC Score Analyzer
 
-A desktop application for Immunohistochemistry (IHC) scoring analysis, built with `PyQt5 + OpenCV + imageio + matplotlib`. Designed for semi-quantitative analysis of IHC stained images, with support for single-image analysis, ROI selection, batch processing, CSV export, and score overlay visualization.
+A desktop application for Immunohistochemistry (IHC) scoring analysis, built with `PyQt5 + OpenCV + Pillow + matplotlib`. Designed for semi-quantitative analysis of IHC stained images, with support for single-image analysis, ROI selection, batch processing, CSV export, and score overlay visualization.
 
 ## Features
 
@@ -13,7 +13,7 @@ A desktop application for Immunohistochemistry (IHC) scoring analysis, built wit
 - **Batch Analysis** — Open an entire folder and analyze all images at once with CSV export
 - **Visualization** — Original image, positive region (HSV masked), preprocessed image, and color-coded score overlay
 - **Bilingual UI** — Switch between Chinese and English with one click
-- **TIFF Support** — Enhanced TIFF loading via imageio with cv2 fallback; handles Unicode file paths
+- **TIFF Support** — Enhanced TIFF loading via Pillow with cv2 fallback; handles Unicode file paths
 - **Cross-Platform** — Runs on macOS and Windows; automated builds via GitHub Actions
 
 ## Scoring Rules
@@ -116,7 +116,7 @@ python3 ihc_scorer.py
 ### Requirements
 
 - Python 3.9+
-- PyQt5, OpenCV, NumPy, imageio, Matplotlib, Pillow
+- PyQt5, OpenCV, NumPy, scikit-image, Matplotlib, Pillow
 
 ## Usage
 
