@@ -1,52 +1,54 @@
 # IHC Score Analyzer
 
-A desktop application for Immunohistochemistry (IHC) scoring analysis, built with `PyQt5 + OpenCV + scikit-image + matplotlib`. Designed for semi-quantitative analysis of H-DAB / H-E stained images, with support for single-image analysis, ROI selection, batch processing, CSV export, and score overlay visualization.
+A desktop application for Immunohistochemistry (IHC) scoring analysis, built with `PyQt5 + OpenCV + imageio + matplotlib`. Designed for semi-quantitative analysis of IHC stained images, with support for single-image analysis, ROI selection, batch processing, CSV export, and score overlay visualization.
 
 ## Features
 
-- **Color Deconvolution** — Supports `H-DAB`, `H-E`, and `H-DAB (skimage)` stain separation schemes
-- **DAB Channel Analysis** — Automatic DAB grayscale extraction with histogram display
+- **CLAHE Preprocessing** — Gaussian blur + CLAHE (LAB L-channel) for contrast enhancement
+- **HSV Positive Detection** — Automatic detection of brown (DAB) positive regions via HSV color space (Hue 0–20, Saturation ≥ 50, Value ≥ 50) with morphological refinement
+- **Intensity Classification** — Masked-image grayscale analysis for 4-level scoring
 - **ROI Selection** — Draw a region of interest for localized scoring
 - **H-Score Calculation** — `1 × Low+% + 2 × Pos% + 3 × High+%` (range 0–300)
 - **IHC Score** — `Intensity Score × Proportion Score` (range 0–12)
 - **Batch Analysis** — Open an entire folder and analyze all images at once with CSV export
-- **Visualization** — Original image, DAB channel, Hematoxylin channel, and color-coded score overlay
+- **Visualization** — Original image, positive region (HSV masked), preprocessed image, and color-coded score overlay
 - **Bilingual UI** — Switch between Chinese and English with one click
-- **Unicode Path Support** — Handles Chinese/Unicode file paths on Windows
+- **TIFF Support** — Enhanced TIFF loading via imageio with cv2 fallback; handles Unicode file paths
 - **Cross-Platform** — Runs on macOS and Windows; automated builds via GitHub Actions
 
 ## Scoring Rules
 
-Based on [IHC Profiler](https://sourceforge.net/projects/ihcprofiler/) standards.
+### Analysis Pipeline
+
+1. **Preprocessing** — GaussianBlur(3×3) + CLAHE(clipLimit=3.0, tileGridSize=8×8) on LAB L-channel
+2. **HSV Detection** — Extract brown/DAB regions using HSV thresholds, followed by morphological close + open operations
+3. **Intensity Classification** — Classify pixels in the masked image by grayscale value
 
 ### Grayscale Classification
 
-The DAB channel is classified by grayscale value (lower = deeper staining):
+The masked image (positive regions only) is classified by grayscale value (higher = stronger staining):
 
 | Category | Grayscale Range | Overlay Color |
 |----------|----------------|---------------|
-| **High Positive** | 0–60 | Red |
-| **Positive** | 61–120 | Orange |
-| **Low Positive** | 121–180 | Green |
-| **Negative** | 181–235 | Blue |
-| **Background** | 236–255 | Excluded |
-
-All thresholds are adjustable via sliders. Three presets are provided: Standard, Strict, and Loose.
+| **High Positive** | ≥ 160 | Red |
+| **Positive** | 100–159 | Orange |
+| **Low Positive** | 40–99 | Green |
+| **Negative** | < 40 | Blue |
 
 ### Intensity Score (0–3)
 
-Based on the mean grayscale of all positive pixels:
+Based on the mean grayscale of positive pixels (gray > 0 in masked image):
 
 | Mean Grayscale | Score | Label |
 |---------------|-------|-------|
-| No positive pixels | 0 | Negative |
-| ≤ 110 | 3 | Strong Positive |
-| ≤ 150 | 2 | Positive |
-| > 150 | 1 | Low Positive |
+| < 40 | 0 | Negative |
+| 40–99 | 1 | Low Positive |
+| 100–159 | 2 | Positive |
+| ≥ 160 | 3 | Strong Positive |
 
 ### Proportion Score (1–4)
 
-Based on the positive rate (High+ + Pos + Low+):
+Based on the HSV-detected positive pixel ratio:
 
 | Positive Rate | Score |
 |--------------|-------|
@@ -65,12 +67,12 @@ Range: **0–12**
 
 ### Clinical Determination
 
-| Positive Rate | IHC Score | Result |
-|--------------|-----------|--------|
-| < 5% | — | **Negative** [-] |
-| ≥ 5% | 1–3 | **Positive** [+] |
-| ≥ 5% | 4–6 | **Positive** [++] |
-| ≥ 5% | 7–12 | **Positive** [+++] |
+| Total Positive % | IHC Score | Result |
+|-----------------|-----------|--------|
+| ≤ 5% | — | **Negative** [-] |
+| > 5% | 1–3 | **Positive** [+] |
+| > 5% | 4–6 | **Positive** [++] |
+| > 5% | 7–12 | **Positive** [+++] |
 
 ## Batch Export CSV Columns
 
@@ -114,16 +116,15 @@ python3 ihc_scorer.py
 ### Requirements
 
 - Python 3.9+
-- PyQt5, OpenCV, NumPy, scikit-image, Matplotlib, Pillow
+- PyQt5, OpenCV, NumPy, imageio, Matplotlib, Pillow
 
 ## Usage
 
 1. Click **Open Image** or **Open Folder** to load IHC stained images
-2. Select a stain scheme (H-DAB, H-E, or H-DAB skimage)
-3. Adjust thresholds if needed (or use presets)
-4. Click **Analyze** for single image, or **Batch Analyze** for the whole folder
-5. Optionally select an ROI for localized analysis
-6. Export results as CSV or save the score overlay image
+2. Adjust thresholds if needed (or use presets: Standard / Strict / Loose)
+3. Click **Analyze** for single image, or **Batch Analyze** for the whole folder
+4. Optionally select an ROI for localized analysis
+5. Export results as CSV or save the score overlay image
 
 ### Keyboard Shortcuts
 
@@ -146,8 +147,8 @@ pyinstaller --onefile --windowed --name "IHC_Score_Analyzer" --noconfirm ihc_sco
 Cross-platform builds are automated via GitHub Actions (`.github/workflows/build.yml`). Push a version tag to trigger:
 
 ```bash
-git tag v1.5.0
-git push github v1.5.0
+git tag v1.6.0
+git push github v1.6.0
 ```
 
 ## Project Structure
@@ -156,7 +157,6 @@ git push github v1.5.0
 ihc_scorer.py               Main application (single-file architecture)
 requirements.txt            Python dependencies
 docs/changelog.md           Changelog
-tools/codex_discuss.py      AI-assisted code discussion tool
 .github/workflows/build.yml GitHub Actions CI/CD
 ```
 

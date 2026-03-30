@@ -10,6 +10,7 @@ import csv
 import platform
 import numpy as np
 import cv2
+import imageio
 import matplotlib
 from datetime import datetime
 
@@ -391,11 +392,20 @@ class IHCScorer(QMainWindow):
         # 数据
         self.original_image = None   # BGR
         self.rgb_image = None        # RGB
-        self.dab_channel = None      # DAB通道
-        self.hem_channel = None      # Hematoxylin通道
+        self.dab_channel = None      # DAB通道 (masked image grayscale)
+        self.hem_channel = None      # Hematoxylin通道 (preprocessed grayscale)
         self.score_mask = None       # 评分掩膜
         self.current_file = ""
         self.batch_files = []
+        # tiff 逻辑新增
+        self.preprocessed_image = None  # CLAHE预处理后的RGB图像
+        self.masked_image = None        # HSV掩膜后的图像
+        self.hsv_mask = None            # HSV二值掩膜
+        self.positive_ratio = 0.0       # 阳性像素比例
+        self.hsv_params = {
+            'hue_low': 0, 'hue_high': 20,
+            'saturation_low': 50, 'value_low': 50
+        }
 
         self._init_ui()
         self._apply_dark_theme()
@@ -620,10 +630,10 @@ class IHCScorer(QMainWindow):
         thresh_layout.addWidget(self.lbl_high_tag, 1, 0)
         self.slider_strong = QSlider(Qt.Horizontal)
         self.slider_strong.setRange(0, 255)
-        self.slider_strong.setValue(60)
+        self.slider_strong.setValue(160)
         self.slider_strong.valueChanged.connect(self._on_threshold_changed)
         thresh_layout.addWidget(self.slider_strong, 1, 1)
-        self.lbl_strong = QLabel("60")
+        self.lbl_strong = QLabel("160")
         self.lbl_strong.setMinimumWidth(30)
         thresh_layout.addWidget(self.lbl_strong, 1, 2)
 
@@ -631,10 +641,10 @@ class IHCScorer(QMainWindow):
         thresh_layout.addWidget(self.lbl_pos_tag, 2, 0)
         self.slider_moderate = QSlider(Qt.Horizontal)
         self.slider_moderate.setRange(0, 255)
-        self.slider_moderate.setValue(120)
+        self.slider_moderate.setValue(100)
         self.slider_moderate.valueChanged.connect(self._on_threshold_changed)
         thresh_layout.addWidget(self.slider_moderate, 2, 1)
-        self.lbl_moderate = QLabel("120")
+        self.lbl_moderate = QLabel("100")
         self.lbl_moderate.setMinimumWidth(30)
         thresh_layout.addWidget(self.lbl_moderate, 2, 2)
 
@@ -642,10 +652,10 @@ class IHCScorer(QMainWindow):
         thresh_layout.addWidget(self.lbl_low_tag, 3, 0)
         self.slider_weak = QSlider(Qt.Horizontal)
         self.slider_weak.setRange(0, 255)
-        self.slider_weak.setValue(180)
+        self.slider_weak.setValue(40)
         self.slider_weak.valueChanged.connect(self._on_threshold_changed)
         thresh_layout.addWidget(self.slider_weak, 3, 1)
-        self.lbl_weak = QLabel("180")
+        self.lbl_weak = QLabel("40")
         self.lbl_weak.setMinimumWidth(30)
         thresh_layout.addWidget(self.lbl_weak, 3, 2)
 
@@ -655,15 +665,15 @@ class IHCScorer(QMainWindow):
         preset_layout.addWidget(self.lbl_preset)
         self.btn_preset_std = QPushButton("标准")
         self.btn_preset_std.setFixedHeight(28)
-        self.btn_preset_std.clicked.connect(lambda: self._set_thresholds(60, 120, 180))
+        self.btn_preset_std.clicked.connect(lambda: self._set_thresholds(160, 100, 40))
         preset_layout.addWidget(self.btn_preset_std)
         self.btn_preset_strict = QPushButton("严格")
         self.btn_preset_strict.setFixedHeight(28)
-        self.btn_preset_strict.clicked.connect(lambda: self._set_thresholds(40, 100, 160))
+        self.btn_preset_strict.clicked.connect(lambda: self._set_thresholds(180, 120, 60))
         preset_layout.addWidget(self.btn_preset_strict)
         self.btn_preset_loose = QPushButton("宽松")
         self.btn_preset_loose.setFixedHeight(28)
-        self.btn_preset_loose.clicked.connect(lambda: self._set_thresholds(80, 140, 200))
+        self.btn_preset_loose.clicked.connect(lambda: self._set_thresholds(140, 80, 20))
         preset_layout.addWidget(self.btn_preset_loose)
         thresh_layout.addLayout(preset_layout, 4, 0, 1, 3)
 
@@ -781,13 +791,25 @@ class IHCScorer(QMainWindow):
 
     @staticmethod
     def _imread_unicode(path):
-        """读取图像，支持中文/Unicode路径（兼容Windows）"""
+        """防御式加载：优先 imageio（更好的 TIFF 支持），回退 cv2"""
+        img = None
         try:
-            data = np.fromfile(path, dtype=np.uint8)
-            img = cv2.imdecode(data, cv2.IMREAD_COLOR)
-            return img
+            img = imageio.imread(path)
+            if img is None:
+                raise ValueError("imageio.imread returned None")
+            if img.ndim == 2:
+                img = cv2.cvtColor(img, cv2.COLOR_GRAY2RGB)
+            elif img.shape[2] == 4:
+                img = cv2.cvtColor(img, cv2.COLOR_RGBA2RGB)
+            # imageio 返回 RGB，转为 BGR 以兼容后续流程
+            img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
         except Exception:
-            return None
+            try:
+                data = np.fromfile(path, dtype=np.uint8)
+                img = cv2.imdecode(data, cv2.IMREAD_COLOR)
+            except Exception:
+                img = None
+        return img
 
     def _load_image(self, path):
         img = self._imread_unicode(path)
@@ -802,31 +824,53 @@ class IHCScorer(QMainWindow):
         self.canvas_original.set_image(self.rgb_image)
         self.canvas_original.clear_roi()
 
-        # 自动进行颜色反卷积
+        # 自动进行预处理 + HSV检测
         self._perform_deconvolution()
 
         self.setWindowTitle(f"IHC Score Analyzer - {os.path.basename(path)}")
         self.statusBar().showMessage(f"已加载: {path}  |  尺寸: {img.shape[1]}×{img.shape[0]}")
 
-    # ─── 颜色反卷积 ───────────────────────────────────────────────
+    # ─── 预处理 + HSV 阳性检测（复刻 tiff 逻辑） ──────────────────
     def _perform_deconvolution(self):
+        """预处理 + HSV 阳性区域检测（遵循 tiff/ihc_gui.py 的 IHCAnalyzer 逻辑）"""
         if self.rgb_image is None:
             return
 
-        rgb = self.rgb_image.copy()
+        # ── Step 1: 预处理 (GaussianBlur + CLAHE on LAB L-channel) ──
+        blurred = cv2.GaussianBlur(self.rgb_image, (3, 3), 0)
+        lab = cv2.cvtColor(blurred, cv2.COLOR_RGB2LAB)
+        l_ch, a_ch, b_ch = cv2.split(lab)
+        clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
+        cl = clahe.apply(l_ch)
+        self.preprocessed_image = cv2.cvtColor(cv2.merge((cl, a_ch, b_ch)), cv2.COLOR_LAB2RGB)
 
-        # 白平衡
-        if self.chk_auto_balance.isChecked():
-            rgb = self._white_balance(rgb)
+        # ── Step 2: HSV 阳性区域检测 ──
+        hsv = cv2.cvtColor(self.preprocessed_image, cv2.COLOR_RGB2HSV)
+        lower = np.array([self.hsv_params['hue_low'],
+                          self.hsv_params['saturation_low'],
+                          self.hsv_params['value_low']])
+        upper = np.array([self.hsv_params['hue_high'], 255, 255])
+        mask = cv2.inRange(hsv, lower, upper)
+        kernel = np.ones((3, 3), np.uint8)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
 
-        hem, dab = self._extract_stain_channels(rgb)
+        self.hsv_mask = mask
+        self.masked_image = cv2.bitwise_and(
+            self.preprocessed_image, self.preprocessed_image, mask=mask)
+        total_pixels = mask.size
+        positive_pixels = cv2.countNonZero(mask)
+        self.positive_ratio = positive_pixels / total_pixels if total_pixels else 0
 
-        self.dab_channel = dab
-        self.hem_channel = hem
+        # ── 为 UI 兼容生成灰度通道 ──
+        # dab_channel: masked image 灰度（阳性区域有值，其余为0）
+        self.dab_channel = cv2.cvtColor(self.masked_image, cv2.COLOR_RGB2GRAY)
+        # hem_channel: 预处理后图像灰度
+        self.hem_channel = cv2.cvtColor(self.preprocessed_image, cv2.COLOR_RGB2GRAY)
 
-        # 显示通道图像 (使用伪彩色)
-        dab_color = cv2.applyColorMap(255 - dab, cv2.COLORMAP_HOT)
-        hem_color = cv2.applyColorMap(255 - hem, cv2.COLORMAP_BONE)
+        # ── 显示通道图像 (使用伪彩色) ──
+        dab_color = cv2.applyColorMap(255 - self.dab_channel, cv2.COLORMAP_HOT)
+        hem_color = cv2.applyColorMap(255 - self.hem_channel, cv2.COLORMAP_BONE)
 
         self.canvas_dab.set_image(cv2.cvtColor(dab_color, cv2.COLOR_BGR2RGB))
         self.canvas_hem.set_image(cv2.cvtColor(hem_color, cv2.COLOR_BGR2RGB))
@@ -834,70 +878,31 @@ class IHCScorer(QMainWindow):
         # 更新直方图
         self._update_histogram()
 
-    def _stain_to_gray(self, stain_channel):
-        """将光密度通道转换为稳定的 8-bit 灰度图，避免单图归一化导致阴性图被放大"""
-        stain_channel = np.clip(stain_channel, 0, None)
-        gray = np.exp(-stain_channel) * 255.0
-        return np.clip(gray, 0, 255).astype(np.uint8)
+    @staticmethod
+    def _preprocess_rgb(rgb):
+        """对 RGB 图像执行 GaussianBlur + CLAHE 预处理（批量分析用）"""
+        blurred = cv2.GaussianBlur(rgb, (3, 3), 0)
+        lab = cv2.cvtColor(blurred, cv2.COLOR_RGB2LAB)
+        l_ch, a_ch, b_ch = cv2.split(lab)
+        clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
+        cl = clahe.apply(l_ch)
+        return cv2.cvtColor(cv2.merge((cl, a_ch, b_ch)), cv2.COLOR_LAB2RGB)
 
-    def _extract_stain_channels(self, rgb):
-        """提取 Hematoxylin / DAB 灰度通道，输出格式与 IHC Profiler 的阈值定义一致"""
-        stain_name = self.stain_combo.currentText()
-
-        if stain_name == "H-DAB (skimage)":
-            img_float = rgb.astype(np.float64) / 255.0
-            img_float = np.clip(img_float, 1e-6, 1.0)
-            hed = rgb2hed(img_float)
-            hem = self._stain_to_gray(hed[:, :, 0])
-            dab = self._stain_to_gray(hed[:, :, 2])
-            return hem, dab
-
-        stain_matrix = STAIN_VECTORS[stain_name]
-        return self._color_deconvolution(rgb, stain_matrix)
-
-    def _color_deconvolution(self, rgb_img, stain_matrix):
-        """Beer-Lambert颜色反卷积，输出稳定灰度通道"""
-        img = rgb_img.astype(np.float64) / 255.0
-        img = np.clip(img, 1e-6, 1.0)
-
-        # 光密度转换
-        od = -np.log(img)
-
-        # 归一化染色矩阵
-        matrix = stain_matrix.copy().astype(np.float64)
-        for i in range(3):
-            norm = np.sqrt(np.sum(matrix[i] ** 2))
-            if norm > 0:
-                matrix[i] /= norm
-
-        # 反卷积
-        try:
-            inv_matrix = np.linalg.inv(matrix)
-        except np.linalg.LinAlgError:
-            inv_matrix = np.linalg.pinv(matrix)
-
-        h, w, _ = od.shape
-        od_flat = od.reshape(-1, 3)
-        stains = od_flat @ inv_matrix.T
-        stains = stains.reshape(h, w, 3)
-
-        # 提取各通道并转换为稳定灰度图:
-        # 强染色 -> 低灰度，阴性/背景 -> 高灰度
-        channels = []
-        for i in range(2):
-            ch = stains[:, :, i]
-            channels.append(self._stain_to_gray(ch))
-
-        return channels[0], channels[1]  # Hematoxylin, DAB
-
-    def _white_balance(self, rgb):
-        """简单白平衡"""
-        result = rgb.copy().astype(np.float32)
-        for i in range(3):
-            p95 = np.percentile(result[:, :, i], 95)
-            if p95 > 0:
-                result[:, :, i] = result[:, :, i] * (255.0 / p95)
-        return np.clip(result, 0, 255).astype(np.uint8)
+    @staticmethod
+    def _detect_positive_hsv(preprocessed_rgb, params):
+        """HSV 阳性区域检测，返回 (mask, masked_image, positive_ratio)"""
+        hsv = cv2.cvtColor(preprocessed_rgb, cv2.COLOR_RGB2HSV)
+        lower = np.array([params['hue_low'], params['saturation_low'], params['value_low']])
+        upper = np.array([params['hue_high'], 255, 255])
+        mask = cv2.inRange(hsv, lower, upper)
+        kernel = np.ones((3, 3), np.uint8)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
+        masked_image = cv2.bitwise_and(preprocessed_rgb, preprocessed_rgb, mask=mask)
+        total_pixels = mask.size
+        positive_pixels = cv2.countNonZero(mask)
+        positive_ratio = positive_pixels / total_pixels if total_pixels else 0
+        return mask, masked_image, positive_ratio
 
     def _get_threshold_values(self):
         """获取并规范化当前灰度阈值"""
@@ -908,44 +913,20 @@ class IHCScorer(QMainWindow):
         return t_high, t_pos, t_low, t_tissue
 
     def _update_threshold_info(self):
-        """更新阈值说明文本，和 IHC Profiler 的灰度定义保持一致"""
+        """更新阈值说明文本（HSV检测 + 灰度强度分级）"""
         t_high, t_pos, t_low, t_tissue = self._get_threshold_values()
-        negative_upper = max(t_low + 1, t_tissue - 1)
         if self.lang is self.LANG_ZH:
             self.threshold_info_label.setText(
-                "灰度值越低 = 染色越深\n"
-                f"强阳性(0-{t_high}) | 阳性({t_high + 1}-{t_pos}) | "
-                f"弱阳性({t_pos + 1}-{t_low}) | 阴性({t_low + 1}-{negative_upper}) | "
-                f"背景({t_tissue}-255, 自动排除)"
+                "HSV检测阳性区域, 灰度值越高 = 染色越强\n"
+                f"强阳性(>={t_high}) | 阳性({t_pos}-{t_high - 1}) | "
+                f"弱阳性({t_low}-{t_pos - 1}) | 阴性(<{t_low})"
             )
         else:
             self.threshold_info_label.setText(
-                "Lower grayscale = Deeper staining\n"
-                f"High+(0-{t_high}) | Pos({t_high + 1}-{t_pos}) | "
-                f"Low+({t_pos + 1}-{t_low}) | Neg({t_low + 1}-{negative_upper}) | "
-                f"BG({t_tissue}-255, excluded)"
+                "HSV detects positive regions, higher gray = stronger staining\n"
+                f"High+(>={t_high}) | Pos({t_pos}-{t_high - 1}) | "
+                f"Low+({t_low}-{t_pos - 1}) | Neg(<{t_low})"
             )
-
-    def _score_intensity_from_gray(self, gray, high_mask, pos_mask, low_mask):
-        """根据阳性区域平均灰度估算染色强度，减少弱串色把所有样本都压成 1 分的问题"""
-        positive_mask = high_mask | pos_mask | low_mask
-        positive_values = gray[positive_mask]
-        if positive_values.size == 0:
-            return 0, '阴性', '未检测到阳性像素', None
-
-        mean_gray = float(np.mean(positive_values))
-        if mean_gray <= 110:
-            intensity_score = 3
-            intensity_label = '强阳性'
-        elif mean_gray <= 150:
-            intensity_score = 2
-            intensity_label = '阳性'
-        else:
-            intensity_score = 1
-            intensity_label = '弱阳性'
-
-        intensity_basis = f"阳性区域平均灰度: {mean_gray:.1f}"
-        return intensity_score, intensity_label, intensity_basis, mean_gray
 
     # ─── 分析 ─────────────────────────────────────────────────────
     def analyze_current(self):
@@ -956,15 +937,19 @@ class IHCScorer(QMainWindow):
         self._display_results(results)
         self._create_score_overlay(results)
 
-    def _calculate_scores(self, dab=None, roi=None):
-        """计算IHC评分（基于灰度值标准）
-        与 IHC 批量分析工具对齐：
-        - 总像素 = W × H（全图）
-        - 背景像素（灰度 >= 背景阈值）归入阴性，不从分母排除
-        - 所有百分比以全图像素为分母
+    def _calculate_scores(self, dab=None, roi=None, positive_ratio=None):
+        """计算IHC评分（复刻 tiff/ihc_gui.py 的 IHCAnalyzer 逻辑）
+        - 基于 masked image 灰度分级
+        - 灰度值越高 = 在阳性区域内染色越强
+        - gray < 40: 阴性 (包括被HSV掩膜排除的黑色像素)
+        - 40 <= gray < 100: 低阳性
+        - 100 <= gray < 160: 阳性
+        - gray >= 160: 强阳性
         """
         if dab is None:
             dab = self.dab_channel
+        if positive_ratio is None:
+            positive_ratio = self.positive_ratio
 
         # 获取分析区域
         if roi is None:
@@ -976,18 +961,13 @@ class IHCScorer(QMainWindow):
             y = max(0, y)
             w = min(w, dab.shape[1] - x)
             h = min(h, dab.shape[0] - y)
-            dab_roi = dab[y:y+h, x:x+w]
+            gray = dab[y:y+h, x:x+w]
             area_info = f"ROI({x},{y},{w}x{h})"
         else:
-            dab_roi = dab
+            gray = dab
             area_info = "全图"
 
-        # 灰度值阈值
-        t_high, t_pos, t_low, t_tissue = self._get_threshold_values()
-
-        # DAB 通道灰度: 值越低 = 染色越深
-        gray = dab_roi
-        total_pixels = int(gray.size)  # W × H，全图像素（显示用）
+        total_pixels = int(gray.size)
 
         if total_pixels == 0:
             return {
@@ -1004,86 +984,91 @@ class IHCScorer(QMainWindow):
                 'area_info': area_info
             }
 
-        # ── 严格按 IHC Profiler 规则分类 ──
-        # Region4: High Positive  i>=0   && i<61   (灰度 0-60)
-        # Region3: Positive       i>60   && i<121  (灰度 61-120)
-        # Region2: Low Positive   i>120  && i<181  (灰度 121-180)
-        # Region1: Negative       i>180  && i<236  (灰度 181-235)
-        # Region0: Background     i>235  && i<=256 (灰度 236-255, 排除)
-        high_mask = (gray >= 0) & (gray < 61)
-        pos_mask = (gray > 60) & (gray < 121)
-        low_mask = (gray > 120) & (gray < 181)
-        neg_mask = (gray > 180) & (gray < 236)
-        bg_mask = (gray > 235)
+        # ── 强度分级（与 tiff IHCAnalyzer.analyze_intensity_levels 一致）──
+        # masked image 中: 被掩膜排除的像素 = 0(黑色), 阳性像素保留原灰度
+        n_high = int(np.sum(gray >= 160))
+        n_pos  = int(np.sum((gray >= 100) & (gray < 160)))
+        n_low  = int(np.sum((gray >= 40) & (gray < 100)))
+        n_neg  = int(np.sum(gray < 40))
 
-        n_high = np.sum(high_mask)
-        n_pos = np.sum(pos_mask)
-        n_low = np.sum(low_mask)
-        n_neg = np.sum(neg_mask)
-        n_bg = np.sum(bg_mask)
+        pct_high = n_high / total_pixels * 100
+        pct_pos  = n_pos / total_pixels * 100
+        pct_low  = n_low / total_pixels * 100
+        pct_neg  = n_neg / total_pixels * 100
 
-        # 分母 = 非背景像素（与 IHC Profiler 一致）
-        tissue_total = n_high + n_pos + n_low + n_neg
-        if tissue_total == 0:
-            tissue_total = 1  # 防止除零
+        total_pos = pct_high + pct_pos + pct_low
+        score_label = 'Positive' if total_pos > 5 else 'Negative'
 
-        pct_high = n_high / tissue_total * 100
-        pct_pos = n_pos / tissue_total * 100
-        pct_low = n_low / tissue_total * 100
-        pct_neg = n_neg / tissue_total * 100
-
-        # 阳性率
-        positive_rate = pct_high + pct_pos + pct_low
-
-        # H-Score = 1x(%Low+) + 2x(%Positive) + 3x(%High+), 范围0-300
+        # H-Score (保留兼容)
         h_score = 1 * pct_low + 2 * pct_pos + 3 * pct_high
 
-        # ── 染色强度评分 (Intensity Score, 0-3) ──
-        # 阴性=0, 弱阳性=1, 阳性=2, 强阳性=3
-        intensity_score, intensity_label, intensity_basis, mean_positive_gray = (
-            self._score_intensity_from_gray(gray, high_mask, pos_mask, low_mask)
-        )
+        # ── 临床评分（与 tiff IHCAnalyzer.calculate_clinical_scores 一致）──
+        # 阳性像素的平均灰度（gray > 0 排除被掩膜遮盖的黑色像素）
+        positive_gray = gray[gray > 0]
+        mean_intensity = float(np.mean(positive_gray)) if positive_gray.size else 0
 
-        # ── 阳性比例评分 (Proportion Score, 1-4) ──
-        # 最低为 1（与参考工具对齐）
-        if positive_rate <= 25:
+        # 染色强度评分 (0-3)
+        if mean_intensity < 40:
+            intensity_score = 0
+            intensity_label = '阴性'
+        elif mean_intensity < 100:
+            intensity_score = 1
+            intensity_label = '弱阳性'
+        elif mean_intensity < 160:
+            intensity_score = 2
+            intensity_label = '阳性'
+        else:
+            intensity_score = 3
+            intensity_label = '强阳性'
+
+        intensity_basis = f"阳性区域平均灰度: {mean_intensity:.1f}"
+
+        # 阳性比例评分 (1-4)，基于 HSV 检测的 positive_ratio
+        pos_pct = positive_ratio * 100
+        if pos_pct <= 25:
             proportion_score = 1
-        elif positive_rate <= 50:
+        elif pos_pct <= 50:
             proportion_score = 2
-        elif positive_rate <= 75:
+        elif pos_pct <= 75:
             proportion_score = 3
         else:
             proportion_score = 4
 
-        # ── 最终IHC评分 = 强度 x 比例 (0-12) ──
+        # IHC 评分 = 强度 x 比例 (0-12)
         ihc_score = intensity_score * proportion_score
 
-        # ── 临床判定 ──
-        if positive_rate < self.CLINICAL_POSITIVE_THRESHOLD:
-            clinical = "Negative"
-            clinical_detail = "阴性 [-]"
+        # 临床判定
+        if score_label == 'Negative':
+            clinical = 'Negative'
+            clinical_detail = '阴性 [-]'
         elif ihc_score <= 3:
-            clinical = "Positive"
-            clinical_detail = "弱阳性 [+]"
+            clinical = 'Positive'
+            clinical_detail = '弱阳性 [+]'
         elif ihc_score <= 6:
-            clinical = "Positive"
-            clinical_detail = "阳性 [++]"
+            clinical = 'Positive'
+            clinical_detail = '阳性 [++]'
         else:
-            clinical = "Positive"
-            clinical_detail = "强阳性 [+++]"
+            clinical = 'Positive'
+            clinical_detail = '强阳性 [+++]'
 
-        # 背景统计（来自 DAB 通道的 Region0）
-        background_pixels = int(n_bg)
-        tissue_pixels = int(tissue_total)
+        # 组织/背景像素统计
+        tissue_pixels = int(np.sum(gray > 0))
+        background_pixels = int(np.sum(gray == 0))
+
+        # 分级掩膜（用于叠加显示）
+        high_mask = (gray >= 160)
+        pos_mask  = (gray >= 100) & (gray < 160)
+        low_mask  = (gray >= 40) & (gray < 100)
+        neg_mask  = (gray < 40)
 
         return {
             'negative': pct_neg, 'low_pos': pct_low,
             'positive': pct_pos, 'high_pos': pct_high,
-            'h_score': h_score, 'positive_rate': positive_rate,
+            'h_score': h_score, 'positive_rate': total_pos,
             'intensity_score': intensity_score,
             'intensity_label': intensity_label,
             'intensity_basis': intensity_basis,
-            'mean_positive_gray': mean_positive_gray,
+            'mean_positive_gray': mean_intensity if positive_gray.size else None,
             'proportion_score': proportion_score,
             'ihc_score': ihc_score,
             'clinical': clinical,
@@ -1375,16 +1360,15 @@ class IHCScorer(QMainWindow):
                 continue
 
             rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-            if self.chk_auto_balance.isChecked():
-                rgb = self._white_balance(rgb)
 
-            _, dab = self._extract_stain_channels(rgb)
+            # 复刻 tiff 逻辑: 预处理 + HSV 检测
+            preprocessed = self._preprocess_rgb(rgb)
+            _mask, masked_img, pos_ratio = self._detect_positive_hsv(
+                preprocessed, self.hsv_params)
+            dab = cv2.cvtColor(masked_img, cv2.COLOR_RGB2GRAY)
 
-            # 临时设置图像用于计算
-            old_rgb = self.rgb_image
-            self.rgb_image = rgb
-            results = self._calculate_scores(dab=dab, roi=None)
-            self.rgb_image = old_rgb
+            results = self._calculate_scores(
+                dab=dab, roi=None, positive_ratio=pos_ratio)
 
             results['filename'] = os.path.basename(path)
             self.batch_table.add_result(results)
