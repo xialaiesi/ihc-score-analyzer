@@ -423,6 +423,11 @@ class IHCScorer(QMainWindow):
         self._init_ui()
         self._apply_dark_theme()
 
+        # 设置窗口图标
+        icon_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'icon.png')
+        if os.path.exists(icon_path):
+            self.setWindowIcon(QIcon(icon_path))
+
     def _apply_dark_theme(self):
         self.setStyleSheet("""
             QMainWindow { background-color: #1e1e1e; }
@@ -1508,24 +1513,32 @@ class IHCScorer(QMainWindow):
             self._navigate_to(0)
 
     # ─── 导出 ─────────────────────────────────────────────────────
+    def _csv_headers(self):
+        """根据当前语言返回 CSV 表头"""
+        if self.lang is self.LANG_EN:
+            return ['Filename', 'Total Pixels', 'High+(%)', 'Pos(%)', 'Low+(%)',
+                    'Neg(%)', 'Clinical', 'Intensity', 'Proportion', 'IHC Score']
+        return ['图片名称', '总像素', '高强阳(%)', '中阳(%)', '低阳(%)',
+                '阴性(%)', '临床判定', '强度评分', '比例评分', 'IHC评分']
+
     def export_results(self):
+        is_en = self.lang is self.LANG_EN
         if self.batch_table.rowCount() == 0:
             # 只有单张图像结果
             if self.dab_channel is None:
-                QMessageBox.information(self, "提示", "没有可导出的结果")
+                msg = "No results to export" if is_en else "没有可导出的结果"
+                QMessageBox.information(self, "Info" if is_en else "提示", msg)
                 return
             results = self._calculate_scores()
+            dlg_title = "Export Results" if is_en else "导出结果"
+            dlg_filter = "CSV Files (*.csv)" if is_en else "CSV文件 (*.csv)"
             path, _ = QFileDialog.getSaveFileName(
-                self, "导出结果", f"ihc_result_{datetime.now():%Y%m%d_%H%M%S}.csv",
-                "CSV文件 (*.csv)"
-            )
+                self, dlg_title,
+                f"ihc_result_{datetime.now():%Y%m%d_%H%M%S}.csv", dlg_filter)
             if path:
                 with open(path, 'w', newline='', encoding='utf-8-sig') as f:
                     writer = csv.writer(f)
-                    writer.writerow([
-                        '图片名称', '总像素', '高强阳(%)', '中阳(%)', '低阳(%)',
-                        '阴性(%)', '临床判定', '强度评分', '比例评分', 'IHC评分'
-                    ])
+                    writer.writerow(self._csv_headers())
                     writer.writerow([
                         os.path.basename(self.current_file),
                         results['total_pixels'],
@@ -1538,14 +1551,15 @@ class IHCScorer(QMainWindow):
                         results['proportion_score'],
                         results['ihc_score'],
                     ])
-                self.statusBar().showMessage(f"结果已导出: {path}")
+                msg = f"Exported: {path}" if is_en else f"结果已导出: {path}"
+                self.statusBar().showMessage(msg)
         else:
             # 批量结果
+            dlg_title = "Export Batch Results" if is_en else "导出批量结果"
+            dlg_filter = "CSV Files (*.csv)" if is_en else "CSV文件 (*.csv)"
             path, _ = QFileDialog.getSaveFileName(
-                self, "导出批量结果",
-                f"ihc_batch_{datetime.now():%Y%m%d_%H%M%S}.csv",
-                "CSV文件 (*.csv)"
-            )
+                self, dlg_title,
+                f"ihc_batch_{datetime.now():%Y%m%d_%H%M%S}.csv", dlg_filter)
             if path:
                 with open(path, 'w', newline='', encoding='utf-8-sig') as f:
                     writer = csv.writer(f)
@@ -1560,14 +1574,18 @@ class IHCScorer(QMainWindow):
                             item = self.batch_table.item(row, col)
                             row_data.append(item.text() if item else "")
                         writer.writerow(row_data)
-                self.statusBar().showMessage(f"批量结果已导出: {path}")
+                msg = f"Exported: {path}" if is_en else f"批量结果已导出: {path}"
+                self.statusBar().showMessage(msg)
 
     def save_analysis_image(self):
+        is_en = self.lang is self.LANG_EN
         if self.score_mask is None:
-            QMessageBox.information(self, "提示", "请先执行分析")
+            msg = "Please analyze first" if is_en else "请先执行分析"
+            QMessageBox.information(self, "Info" if is_en else "提示", msg)
             return
+        dlg_title = "Save Analysis Image" if is_en else "保存分析图像"
         path, _ = QFileDialog.getSaveFileName(
-            self, "保存分析图像",
+            self, dlg_title,
             f"ihc_analysis_{datetime.now():%Y%m%d_%H%M%S}.png",
             "PNG (*.png);;JPEG (*.jpg);;TIFF (*.tif)"
         )
@@ -1577,7 +1595,8 @@ class IHCScorer(QMainWindow):
             result, buf = cv2.imencode(ext, save_img)
             if result:
                 buf.tofile(path)
-            self.statusBar().showMessage(f"分析图像已保存: {path}")
+            msg = f"Image saved: {path}" if is_en else f"分析图像已保存: {path}"
+            self.statusBar().showMessage(msg)
 
 
 def main():

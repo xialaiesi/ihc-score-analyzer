@@ -34,11 +34,11 @@ jobs:
 
       - name: Build with PyInstaller (Windows)
         if: runner.os == 'Windows'
-        run: pyinstaller --onefile --windowed --name "IHC_Score_Analyzer" --noconfirm ihc_scorer.py
+        run: pyinstaller --onefile --windowed --name "IHC_Score_Analyzer" --icon=icon.ico --noconfirm ihc_scorer.py
 
       - name: Build with PyInstaller (macOS)
         if: runner.os == 'macOS'
-        run: pyinstaller --onefile --windowed --name "IHC_Score_Analyzer" --noconfirm ihc_scorer.py
+        run: pyinstaller --onefile --windowed --name "IHC_Score_Analyzer" --icon=icon.icns --noconfirm ihc_scorer.py
 
       - name: Zip macOS app
         if: runner.os == 'macOS'
