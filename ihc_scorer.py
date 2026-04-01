@@ -1560,6 +1560,15 @@ class IHCScorer(QMainWindow):
 
 
 def main():
+    # Windows: set AppUserModelID so taskbar shows custom icon instead of Python's
+    if platform.system() == 'Windows':
+        try:
+            import ctypes
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
+                'FastIHCAnalyzer.2.0')
+        except Exception:
+            pass
+
     app = QApplication(sys.argv)
     app.setApplicationName("FAST IHC Analyzer")
 
@@ -1567,7 +1576,7 @@ def main():
     app.setAttribute(Qt.AA_EnableHighDpiScaling, True)
     app.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
 
-    # Set app-level icon (taskbar / dock)
+    # Set app-level icon (taskbar / dock / window title bar)
     for name in ('icon.ico', 'icon.png'):
         p = IHCScorer._get_resource_path(name)
         if os.path.exists(p):
