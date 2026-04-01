@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """
-IHC Score Analyzer - Immunohistochemistry scoring software.
-An ImageJ-like IHC scoring tool supporting H-Score, positive rate calculation,
-and color deconvolution.
+FAST IHC Analyzer - Fast Immunohistochemistry Analysis Software.
+Supporting H-Score, positive rate calculation, and batch analysis.
 """
 
 import sys
@@ -318,7 +317,7 @@ class IHCScorer(QMainWindow):
 
     # ── Bilingual text ──
     LANG_ZH = {
-        'title': 'IHC Score Analyzer - 免疫组化评分分析',
+        'title': 'FAST IHC Analyzer - 快速免疫组化分析',
         'open': '打开图像(&O)', 'open_folder': '打开文件夹(&D)',
         'export': '导出结果(&E)', 'save_img': '保存分析图像(&S)',
         'toolbar_open': '打开图像', 'toolbar_folder': '打开文件夹',
@@ -344,7 +343,7 @@ class IHCScorer(QMainWindow):
         'lang_switch': 'English',
     }
     LANG_EN = {
-        'title': 'IHC Score Analyzer',
+        'title': 'FAST IHC Analyzer',
         'open': 'Open Image(&O)', 'open_folder': 'Open Folder(&D)',
         'export': 'Export Results(&E)', 'save_img': 'Save Analysis Image(&S)',
         'toolbar_open': 'Open', 'toolbar_folder': 'Open Folder',
@@ -401,10 +400,23 @@ class IHCScorer(QMainWindow):
         self._init_ui()
         self._apply_dark_theme()
 
-        # Set window icon
-        icon_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'icon.png')
-        if os.path.exists(icon_path):
-            self.setWindowIcon(QIcon(icon_path))
+        # Set window icon (supports PyInstaller bundled environment)
+        self.setWindowIcon(self._load_app_icon())
+
+    @staticmethod
+    def _get_resource_path(filename):
+        """Get absolute path to resource, works for dev and PyInstaller."""
+        if hasattr(sys, '_MEIPASS'):
+            return os.path.join(sys._MEIPASS, filename)
+        return os.path.join(os.path.dirname(os.path.abspath(__file__)), filename)
+
+    def _load_app_icon(self):
+        """Load application icon from bundled or local resource."""
+        for name in ('icon.ico', 'icon.png'):
+            path = self._get_resource_path(name)
+            if os.path.exists(path):
+                return QIcon(path)
+        return QIcon()
 
     def _apply_dark_theme(self):
         self.setStyleSheet("""
@@ -795,7 +807,7 @@ class IHCScorer(QMainWindow):
         # Auto-run preprocessing + HSV detection
         self._perform_deconvolution()
 
-        self.setWindowTitle(f"IHC Score Analyzer - {os.path.basename(path)}")
+        self.setWindowTitle(f"FAST IHC Analyzer - {os.path.basename(path)}")
         self.statusBar().showMessage(f"已加载: {path}  |  尺寸: {img.shape[1]}×{img.shape[0]}")
 
     # ─── Preprocessing + HSV positive detection ────────────────────
@@ -1352,7 +1364,7 @@ class IHCScorer(QMainWindow):
             self.canvas_hem.set_image(preprocessed, is_rgb=True)
             self._update_histogram()
 
-            self.setWindowTitle(f"IHC Score Analyzer - {os.path.basename(path)}")
+            self.setWindowTitle(f"FAST IHC Analyzer - {os.path.basename(path)}")
         else:
             # No cache, load normally
             self._load_image(path)
@@ -1549,11 +1561,18 @@ class IHCScorer(QMainWindow):
 
 def main():
     app = QApplication(sys.argv)
-    app.setApplicationName("IHC Score Analyzer")
+    app.setApplicationName("FAST IHC Analyzer")
 
     # High DPI support
     app.setAttribute(Qt.AA_EnableHighDpiScaling, True)
     app.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
+
+    # Set app-level icon (taskbar / dock)
+    for name in ('icon.ico', 'icon.png'):
+        p = IHCScorer._get_resource_path(name)
+        if os.path.exists(p):
+            app.setWindowIcon(QIcon(p))
+            break
 
     window = IHCScorer()
     window.show()
