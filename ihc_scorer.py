@@ -42,15 +42,18 @@ from matplotlib.figure import Figure
 
 
 class ImageCanvas(QLabel):
-    """Zoomable, pannable image display widget with ROI selection."""
-    roi_selected = pyqtSignal(QRect)
+    """Zoomable, pannable image display widget with freehand ROI selection."""
+    roi_selected = pyqtSignal(object)  # emits list of QPoint (polygon)
 
     def __init__(self):
         super().__init__()
         self.setAlignment(Qt.AlignCenter)
         self.setMinimumSize(400, 400)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        self.setStyleSheet("background-color: #2b2b2b; border: 1px solid #555;")
+        self.setStyleSheet(
+            "background-color: #10131c; border: 1px solid rgba(100, 140, 220, 0.06); "
+            "border-radius: 10px; color: #3a4a68; font-size: 18px;"
+        )
 
         self._pixmap = None
         self._scale = 1.0
@@ -59,9 +62,8 @@ class ImageCanvas(QLabel):
         self._drag_start = QPoint()
         self._selecting_roi = False
         self._roi_mode = False
-        self._roi_start = QPoint()
-        self._roi_end = QPoint()
-        self._current_roi = None
+        self._roi_points = []       # freehand polygon points (image coords)
+        self._drawing_points = []   # points being drawn (image coords)
         self.setMouseTracking(True)
 
     def set_image(self, img_array, is_rgb=False):
@@ -98,27 +100,51 @@ class ImageCanvas(QLabel):
             self._scale = min(vw / pw, vh / ph, 1.0)
             self._offset = QPoint(0, 0)
 
+    def set_empty_hint(self, text):
+        """Set the placeholder text shown when no image is loaded."""
+        self._empty_hint = text
+
     def _update_display(self):
         if self._pixmap is None:
-            self.setText("拖拽图像到此处或点击 [打开图像]")
+            hint = getattr(self, '_empty_hint', '')
+            self.setText(hint)
             return
         scaled = self._pixmap.scaled(
             int(self._pixmap.width() * self._scale),
             int(self._pixmap.height() * self._scale),
             Qt.KeepAspectRatio, Qt.SmoothTransformation
         )
-        # Draw ROI overlay
-        if self._current_roi and not self._current_roi.isNull():
+        # Draw freehand ROI overlay
+        points_to_draw = self._drawing_points if self._selecting_roi else self._roi_points
+        if len(points_to_draw) >= 2:
             painter = QPainter(scaled)
-            pen = QPen(QColor(255, 255, 0), 2, Qt.DashLine)
+            painter.setRenderHint(QPainter.Antialiasing)
+            # Semi-transparent fill
+            if not self._selecting_roi and len(points_to_draw) >= 3:
+                from PyQt5.QtGui import QPolygonF, QBrush
+                from PyQt5.QtCore import QPointF
+                poly = QPolygonF([QPointF(p.x() * self._scale, p.y() * self._scale) for p in points_to_draw])
+                painter.setPen(Qt.NoPen)
+                painter.setBrush(QBrush(QColor(255, 220, 50, 30)))
+                painter.drawPolygon(poly)
+            # Outline
+            pen = QPen(QColor(255, 220, 50), 2, Qt.SolidLine if self._selecting_roi else Qt.DashLine)
             painter.setPen(pen)
-            r = QRect(
-                int(self._current_roi.x() * self._scale),
-                int(self._current_roi.y() * self._scale),
-                int(self._current_roi.width() * self._scale),
-                int(self._current_roi.height() * self._scale),
-            )
-            painter.drawRect(r)
+            for i in range(len(points_to_draw) - 1):
+                p1 = points_to_draw[i]
+                p2 = points_to_draw[i + 1]
+                painter.drawLine(
+                    int(p1.x() * self._scale), int(p1.y() * self._scale),
+                    int(p2.x() * self._scale), int(p2.y() * self._scale),
+                )
+            # Close the polygon if finished
+            if not self._selecting_roi and len(points_to_draw) >= 3:
+                p1 = points_to_draw[-1]
+                p2 = points_to_draw[0]
+                painter.drawLine(
+                    int(p1.x() * self._scale), int(p1.y() * self._scale),
+                    int(p2.x() * self._scale), int(p2.y() * self._scale),
+                )
             painter.end()
         self.setPixmap(scaled)
 
@@ -127,11 +153,28 @@ class ImageCanvas(QLabel):
         self.setCursor(QCursor(Qt.CrossCursor if enabled else Qt.ArrowCursor))
 
     def clear_roi(self):
-        self._current_roi = None
+        self._roi_points = []
+        self._drawing_points = []
         self._update_display()
 
     def get_roi(self):
-        return self._current_roi
+        """Return bounding QRect of the freehand polygon, or None."""
+        if len(self._roi_points) < 3:
+            return None
+        xs = [p.x() for p in self._roi_points]
+        ys = [p.y() for p in self._roi_points]
+        return QRect(min(xs), min(ys), max(xs) - min(xs), max(ys) - min(ys))
+
+    def get_roi_mask(self, shape):
+        """Return a binary numpy mask (h, w) for the freehand polygon ROI.
+        Returns None if no ROI is set."""
+        if len(self._roi_points) < 3:
+            return None
+        h, w = shape[:2]
+        pts = np.array([[p.x(), p.y()] for p in self._roi_points], dtype=np.int32)
+        mask = np.zeros((h, w), dtype=np.uint8)
+        cv2.fillPoly(mask, [pts], 255)
+        return mask
 
     def wheelEvent(self, event: QWheelEvent):
         if self._pixmap is None:
@@ -147,35 +190,38 @@ class ImageCanvas(QLabel):
         if event.button() == Qt.LeftButton:
             if self._roi_mode and self._pixmap:
                 self._selecting_roi = True
-                self._roi_start = self._widget_to_image(event.pos())
-                self._roi_end = self._roi_start
+                self._drawing_points = [self._widget_to_image(event.pos())]
             else:
                 self._dragging = True
                 self._drag_start = event.pos()
 
     def mouseMoveEvent(self, event: QMouseEvent):
         if self._selecting_roi:
-            self._roi_end = self._widget_to_image(event.pos())
-            x1, y1 = self._roi_start.x(), self._roi_start.y()
-            x2, y2 = self._roi_end.x(), self._roi_end.y()
-            self._current_roi = QRect(
-                min(x1, x2), min(y1, y2), abs(x2 - x1), abs(y2 - y1)
-            )
+            pt = self._widget_to_image(event.pos())
+            # Only add point if moved enough (avoid too many points)
+            if self._drawing_points:
+                last = self._drawing_points[-1]
+                if abs(pt.x() - last.x()) > 2 or abs(pt.y() - last.y()) > 2:
+                    self._drawing_points.append(pt)
+            else:
+                self._drawing_points.append(pt)
             self._update_display()
 
     def mouseReleaseEvent(self, event: QMouseEvent):
         if event.button() == Qt.LeftButton:
             if self._selecting_roi:
                 self._selecting_roi = False
-                if self._current_roi and self._current_roi.width() > 5 and self._current_roi.height() > 5:
-                    self.roi_selected.emit(self._current_roi)
+                if len(self._drawing_points) >= 10:
+                    self._roi_points = list(self._drawing_points)
+                    self.roi_selected.emit(self._roi_points)
+                self._drawing_points = []
+                self._update_display()
             self._dragging = False
 
     def _widget_to_image(self, pos):
         """Convert widget coordinates to image coordinates."""
         if self._pixmap is None:
             return QPoint(0, 0)
-        # Calculate image offset within the widget
         sw = int(self._pixmap.width() * self._scale)
         sh = int(self._pixmap.height() * self._scale)
         ox = (self.width() - sw) // 2
@@ -196,20 +242,20 @@ class HistogramWidget(FigureCanvas):
     """Histogram display widget."""
     def __init__(self, parent=None):
         self.fig = Figure(figsize=(4, 2.5), dpi=80)
-        self.fig.patch.set_facecolor('#2b2b2b')
+        self.fig.patch.set_facecolor('#1a1e2e')
         super().__init__(self.fig)
         self.setMinimumHeight(180)
 
     def plot_histogram(self, data, title="", thresholds=None, colors=None):
         self.fig.clear()
         ax = self.fig.add_subplot(111)
-        ax.set_facecolor('#1e1e1e')
-        ax.tick_params(colors='white', labelsize=8)
-        ax.set_title(title, color='white', fontsize=10)
+        ax.set_facecolor('#131620')
+        ax.tick_params(colors='#4a5570', labelsize=8)
+        ax.set_title(title, color='#7888a8', fontsize=10, fontweight='medium')
 
         if data is not None and len(data) > 0:
             ax.hist(data.ravel(), bins=256, range=(0, 255),
-                    color='#4fc3f7', alpha=0.7, edgecolor='none')
+                    color='#3088ff', alpha=0.45, edgecolor='none')
 
             if thresholds:
                 color_list = colors or ['#66bb6a', '#ffa726', '#ef5350']
@@ -219,9 +265,9 @@ class HistogramWidget(FigureCanvas):
 
         ax.set_xlim(0, 255)
         for spine in ax.spines.values():
-            spine.set_color('#555')
-        ax.xaxis.label.set_color('white')
-        ax.yaxis.label.set_color('white')
+            spine.set_visible(False)
+        ax.xaxis.label.set_color('#4a5570')
+        ax.yaxis.label.set_color('#4a5570')
         self.fig.tight_layout()
         self.draw()
 
@@ -230,14 +276,14 @@ class ScorePieChart(FigureCanvas):
     """Pie chart for score distribution display."""
     def __init__(self, parent=None):
         self.fig = Figure(figsize=(3, 3), dpi=80)
-        self.fig.patch.set_facecolor('#2b2b2b')
+        self.fig.patch.set_facecolor('#1a1e2e')
         super().__init__(self.fig)
         self.setMinimumHeight(200)
 
     def plot_scores(self, negative, low_pos, positive, high_pos, lang='zh'):
         self.fig.clear()
         ax = self.fig.add_subplot(111)
-        ax.set_facecolor('#2b2b2b')
+        ax.set_facecolor('#1a1e2e')
 
         values = [negative, low_pos, positive, high_pos]
         if lang == 'zh':
@@ -248,14 +294,16 @@ class ScorePieChart(FigureCanvas):
             labels = [f'Neg\n{negative:.1f}%', f'Low+\n{low_pos:.1f}%',
                       f'Pos\n{positive:.1f}%', f'High+\n{high_pos:.1f}%']
             title = 'Score Distribution'
-        colors_list = ['#42a5f5', '#66bb6a', '#ffa726', '#ef5350']
+        colors_list = ['#3080e0', '#20a060', '#d09020', '#d04040']
 
         non_zero = [(v, l, c) for v, l, c in zip(values, labels, colors_list) if v > 0.1]
         if non_zero:
             vals, labs, cols = zip(*non_zero)
             wedges, texts = ax.pie(vals, labels=labs, colors=cols,
-                                    startangle=90, textprops={'color': 'white', 'fontsize': 8})
-        ax.set_title(title, color='white', fontsize=10)
+                                    startangle=90,
+                                    wedgeprops={'linewidth': 2, 'edgecolor': '#1a1e2e'},
+                                    textprops={'color': '#7888a8', 'fontsize': 9})
+        ax.set_title(title, color='#7888a8', fontsize=11, fontweight='medium')
         self.fig.tight_layout()
         self.draw()
 
@@ -274,12 +322,29 @@ class BatchResultTable(QTableWidget):
         self.setAlternatingRowColors(True)
         self.setStyleSheet("""
             QTableWidget {
-                background-color: #1e1e1e; color: white;
-                gridline-color: #555; alternate-background-color: #2a2a2a;
+                background-color: #131620;
+                color: #a0aac0;
+                gridline-color: #1a1e2e;
+                alternate-background-color: #161a28;
+                border: none;
+                font-size: 15px;
+            }
+            QTableWidget::item {
+                padding: 6px 8px;
+                border-bottom: 1px solid #1a1e2e;
+            }
+            QTableWidget::item:selected {
+                background-color: rgba(48, 136, 255, 0.15);
+                color: #6eb4ff;
             }
             QHeaderView::section {
-                background-color: #333; color: white;
-                padding: 4px; border: 1px solid #555;
+                background-color: #131620;
+                color: #5068a0;
+                padding: 8px 10px;
+                border: none;
+                border-bottom: 1px solid #252a3c;
+                font-weight: 600;
+                font-size: 14px;
             }
         """)
 
@@ -305,9 +370,9 @@ class BatchResultTable(QTableWidget):
             # Color-code the clinical determination column
             if col == 7:
                 if 'Positive' in text or '阳性' in text:
-                    item.setForeground(QColor('#ffa726'))
+                    item.setForeground(QColor('#d09020'))
                 else:
-                    item.setForeground(QColor('#42a5f5'))
+                    item.setForeground(QColor('#3080e0'))
             self.setItem(row, col, item)
 
 
@@ -340,6 +405,7 @@ class IHCScorer(QMainWindow):
         'table_headers': ['序号', '图片名称', '总像素', '高强阳(%)', '中阳(%)',
                           '低阳(%)', '阴性(%)', '临床判定', '强度评分', '比例评分', 'IHC评分'],
         'status_ready': '就绪 - 请打开一张IHC染色图像开始分析',
+        'empty_hint': '请打开图像或文件夹开始分析',
         'lang_switch': 'English',
     }
     LANG_EN = {
@@ -366,6 +432,7 @@ class IHCScorer(QMainWindow):
         'table_headers': ['No.', 'Filename', 'Pixels', 'High+(%)', 'Pos(%)',
                           'Low+(%)', 'Neg(%)', 'Clinical', 'Intensity', 'Proportion', 'IHC Score'],
         'status_ready': 'Ready - Open an IHC stained image to begin',
+        'empty_hint': 'Open an image or folder to start analysis',
         'lang_switch': '中文',
     }
 
@@ -393,8 +460,8 @@ class IHCScorer(QMainWindow):
         self.hsv_mask = None            # HSV binary mask
         self.positive_ratio = 0.0       # Positive pixel ratio
         self.hsv_params = {
-            'hue_low': 0, 'hue_high': 20,
-            'saturation_low': 50, 'value_low': 50
+            'hue_low': 0, 'hue_high': 30,
+            'saturation_low': 20, 'value_low': 30
         }
 
         self._init_ui()
@@ -419,70 +486,268 @@ class IHCScorer(QMainWindow):
         return QIcon()
 
     def _apply_dark_theme(self):
+        # ── Neo-Lab: layered midnight-blue ──
         self.setStyleSheet("""
-            QMainWindow { background-color: #1e1e1e; }
-            QWidget { color: #ddd; font-size: 13px; font-family: "Times New Roman", "PingFang SC", "Microsoft YaHei", sans-serif; }
+            /* ═══ Base — midnight navy, NOT black ═══ */
+            QMainWindow {
+                background-color: #131620;
+            }
+            QWidget {
+                color: #c0c8d8;
+                font-size: 16px;
+                font-family: "PingFang SC", "Helvetica Neue", "Microsoft YaHei", "Segoe UI", sans-serif;
+            }
+
+            /* ═══ GroupBox — elevated card ═══ */
             QGroupBox {
-                border: 1px solid #555; border-radius: 4px;
-                margin-top: 8px; padding-top: 12px;
-                font-weight: bold; color: #4fc3f7;
+                border: 1px solid rgba(100, 140, 220, 0.1);
+                margin-top: 14px;
+                padding: 24px 14px 14px 14px;
+                font-weight: 600;
+                font-size: 16px;
+                color: #6eb4ff;
+                background-color: #1a1e2e;
+                border-radius: 14px;
             }
-            QGroupBox::title { subcontrol-position: top left; padding: 2px 8px; }
+            QGroupBox::title {
+                subcontrol-position: top left;
+                padding: 4px 14px;
+                color: #6eb4ff;
+            }
+
+            /* ═══ Default Buttons ═══ */
             QPushButton {
-                background-color: #333; border: 1px solid #555;
-                border-radius: 4px; padding: 6px 14px; color: white;
-                min-height: 24px;
+                background-color: transparent;
+                border: 1px solid transparent;
+                border-radius: 8px;
+                padding: 8px 18px;
+                color: #7080a0;
+                min-height: 28px;
+                font-weight: 500;
+                font-size: 14px;
             }
-            QPushButton:hover { background-color: #444; border-color: #4fc3f7; }
-            QPushButton:pressed { background-color: #555; }
+            QPushButton:hover {
+                background-color: rgba(80, 140, 255, 0.08);
+                border: 1px solid rgba(80, 140, 255, 0.18);
+                color: #d0d8e8;
+            }
+            QPushButton:pressed {
+                background-color: rgba(80, 140, 255, 0.15);
+            }
             QPushButton#primaryBtn {
-                background-color: #1565c0; border-color: #1976d2;
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                    stop:0 #2060e0, stop:1 #3088ff);
+                border: 1px solid rgba(80, 160, 255, 0.4);
+                color: #ffffff;
+                font-weight: 600;
+                border-radius: 8px;
+                padding: 8px 22px;
             }
-            QPushButton#primaryBtn:hover { background-color: #1976d2; }
+            QPushButton#primaryBtn:hover {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                    stop:0 #2870f0, stop:1 #40a0ff);
+                border-color: rgba(100, 180, 255, 0.6);
+            }
+            QPushButton#primaryBtn:pressed {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                    stop:0 #1850c0, stop:1 #2870e0);
+            }
+
+            /* ═══ Sliders ═══ */
             QSlider::groove:horizontal {
-                border: 1px solid #555; height: 6px;
-                background: #333; border-radius: 3px;
+                border: none;
+                height: 4px;
+                background: #1e2236;
+                border-radius: 2px;
             }
             QSlider::handle:horizontal {
-                background: #4fc3f7; border: 1px solid #4fc3f7;
-                width: 14px; margin: -5px 0; border-radius: 7px;
+                background: qradialgradient(cx:0.5, cy:0.5, radius:0.5,
+                    fx:0.5, fy:0.35, stop:0 #80c0ff, stop:0.8 #3080e0, stop:1 #1850a0);
+                border: 1px solid rgba(80, 160, 255, 0.5);
+                width: 14px;
+                height: 14px;
+                margin: -6px 0;
+                border-radius: 7px;
             }
+            QSlider::sub-page:horizontal {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                    stop:0 #1850a0, stop:1 #3088ff);
+                border-radius: 2px;
+            }
+
+            /* ═══ ComboBox ═══ */
             QComboBox {
-                background-color: #333; border: 1px solid #555;
-                border-radius: 4px; padding: 4px 8px; color: white;
+                background-color: #1a1e2e;
+                border: 1px solid #252a3c;
+                border-radius: 8px;
+                padding: 6px 12px;
+                color: #c0c8d8;
             }
-            QComboBox::drop-down { border: none; }
+            QComboBox:hover { border-color: #4080d0; }
+            QComboBox::drop-down { border: none; padding-right: 10px; }
             QComboBox QAbstractItemView {
-                background-color: #333; color: white; selection-background-color: #1565c0;
+                background-color: #1a1e2e;
+                color: #c0c8d8;
+                selection-background-color: #253060;
+                selection-color: #80c0ff;
+                border: 1px solid #252a3c;
+                border-radius: 8px;
             }
+
+            /* ═══ SpinBox ═══ */
             QSpinBox, QDoubleSpinBox {
-                background-color: #333; border: 1px solid #555;
-                border-radius: 4px; padding: 2px 6px; color: white;
+                background-color: #1a1e2e;
+                border: 1px solid #252a3c;
+                border-radius: 8px;
+                padding: 4px 10px;
+                color: #c0c8d8;
             }
-            QTabWidget::pane { border: 1px solid #555; background: #1e1e1e; }
+            QSpinBox:hover, QDoubleSpinBox:hover { border-color: #4080d0; }
+
+            /* ═══ Tabs ═══ */
+            QTabWidget::pane {
+                border: none;
+                background: #131620;
+            }
+            QTabBar { background: transparent; }
             QTabBar::tab {
-                background: #333; color: #aaa; padding: 8px 16px;
-                border: 1px solid #555; border-bottom: none;
-                border-top-left-radius: 4px; border-top-right-radius: 4px;
+                background: transparent;
+                color: #4a5570;
+                padding: 12px 26px;
+                border: none;
+                border-bottom: 2px solid transparent;
+                font-size: 16px;
+                font-weight: 500;
+                margin-right: 4px;
             }
-            QTabBar::tab:selected { background: #1e1e1e; color: #4fc3f7; }
-            QStatusBar { background-color: #252525; color: #aaa; }
+            QTabBar::tab:hover {
+                color: #8090b0;
+                border-bottom: 2px solid #252a3c;
+            }
+            QTabBar::tab:selected {
+                color: #6eb4ff;
+                border-bottom: 2px solid #3088ff;
+            }
+
+            /* ═══ StatusBar ═══ */
+            QStatusBar {
+                background-color: #0e1118;
+                color: #4a5570;
+                border-top: 1px solid #1a1e2e;
+                padding: 4px 14px;
+                font-size: 14px;
+            }
+
+            /* ═══ TextEdit ═══ */
             QTextEdit {
-                background-color: #1e1e1e; color: #ddd;
-                border: 1px solid #555; border-radius: 4px;
+                background-color: #161a28;
+                color: #a0aac0;
+                border: 1px solid rgba(100, 140, 220, 0.08);
+                border-radius: 12px;
+                padding: 14px;
+                selection-background-color: #253060;
+                selection-color: #80c0ff;
             }
-            QMenuBar { background-color: #252525; color: #ddd; font-size: 18px; padding: 2px; }
-            QMenuBar::item:selected { background-color: #333; }
-            QMenu { background-color: #333; color: #ddd; border: 1px solid #555; font-size: 17px; }
-            QMenu::item:selected { background-color: #1565c0; }
-            QMenu::item { padding: 6px 20px; }
-            QToolBar { background-color: #252525; border-bottom: 1px solid #555; spacing: 4px; font-size: 16px; }
-            QToolBar QPushButton { font-size: 16px; padding: 6px 14px; }
+
+            /* ═══ MenuBar ═══ */
+            QMenuBar {
+                background-color: #0e1118;
+                color: #7080a0;
+                font-size: 16px;
+                padding: 4px 8px;
+                border: none;
+            }
+            QMenuBar::item {
+                padding: 6px 14px;
+                border-radius: 6px;
+            }
+            QMenuBar::item:selected {
+                background-color: #1a1e2e;
+                color: #d0d8e8;
+            }
+            QMenu {
+                background-color: #1a1e2e;
+                color: #c0c8d8;
+                border: 1px solid #252a3c;
+                border-radius: 12px;
+                padding: 6px;
+                font-size: 14px;
+            }
+            QMenu::item {
+                padding: 10px 28px;
+                border-radius: 6px;
+            }
+            QMenu::item:selected {
+                background-color: #253060;
+                color: #80c0ff;
+            }
+            QMenu::separator {
+                height: 1px;
+                background: #252a3c;
+                margin: 4px 16px;
+            }
+
+            /* ═══ Toolbar ═══ */
+            QToolBar {
+                background-color: #0e1118;
+                border-bottom: 1px solid #1a1e2e;
+                spacing: 2px;
+                padding: 6px 12px;
+            }
+            QToolBar::separator {
+                width: 0;
+                background: transparent;
+                margin: 0 4px;
+            }
+
+            /* ═══ ProgressBar ═══ */
             QProgressBar {
-                border: 1px solid #555; border-radius: 4px;
-                text-align: center; color: white; background: #333;
+                border: 1px solid #252a3c;
+                border-radius: 4px;
+                text-align: center;
+                color: #c0c8d8;
+                background: #1a1e2e;
+                font-size: 11px;
+                max-height: 6px;
             }
-            QProgressBar::chunk { background-color: #1565c0; border-radius: 3px; }
+            QProgressBar::chunk {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                    stop:0 #2060e0, stop:1 #40a0ff);
+                border-radius: 3px;
+            }
+
+            /* ═══ ScrollBar ═══ */
+            QScrollArea { border: none; background: transparent; }
+            QScrollBar:vertical {
+                background: transparent;
+                width: 5px;
+                border: none;
+            }
+            QScrollBar::handle:vertical {
+                background: #252a3c;
+                border-radius: 2px;
+                min-height: 40px;
+            }
+            QScrollBar::handle:vertical:hover { background: #354060; }
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
+            QScrollBar:horizontal {
+                background: transparent;
+                height: 5px;
+                border: none;
+            }
+            QScrollBar::handle:horizontal {
+                background: #252a3c;
+                border-radius: 2px;
+                min-width: 40px;
+            }
+            QScrollBar::handle:horizontal:hover { background: #354060; }
+            QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal { width: 0; }
+
+            /* ═══ Splitter ═══ */
+            QSplitter::handle { background: transparent; }
+            QSplitter::handle:horizontal { width: 6px; }
+            QSplitter::handle:vertical { height: 6px; }
+            QSplitter::handle:hover { background: #1a1e2e; }
         """)
 
     def _init_ui(self):
@@ -515,100 +780,259 @@ class IHCScorer(QMainWindow):
         # ── Toolbar ──
         toolbar = QToolBar("工具栏")
         toolbar.setIconSize(QSize(20, 20))
+        toolbar.setMovable(False)
         self.addToolBar(toolbar)
 
-        self.btn_open = QPushButton("📂 打开图像")
+        # Style constants for button groups — layered midnight-blue
+        _grp_style = """
+            QWidget#toolGroup {
+                background-color: #181c2a;
+                border: 1px solid rgba(100, 140, 220, 0.1);
+                border-radius: 10px;
+            }
+        """
+        _btn_style_normal = """
+            QPushButton {
+                background: transparent;
+                border: none;
+                border-radius: 7px;
+                padding: 7px 16px;
+                color: #6070a0;
+                font-size: 15px;
+                font-weight: 500;
+            }
+            QPushButton:hover {
+                background-color: rgba(80, 140, 255, 0.1);
+                color: #c0d0f0;
+            }
+            QPushButton:pressed {
+                background-color: rgba(80, 140, 255, 0.18);
+            }
+        """
+        _btn_style_nav = """
+            QPushButton {
+                background: transparent;
+                border: none;
+                border-radius: 7px;
+                padding: 7px 12px;
+                color: #405078;
+                font-size: 17px;
+                font-weight: 400;
+                min-width: 20px;
+            }
+            QPushButton:hover {
+                background-color: rgba(80, 140, 255, 0.1);
+                color: #6eb4ff;
+            }
+            QPushButton:pressed {
+                background-color: rgba(80, 140, 255, 0.18);
+            }
+        """
+        _btn_style_primary = """
+            QPushButton {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                    stop:0 #2060e0, stop:1 #3088ff);
+                border: 1px solid rgba(80, 160, 255, 0.35);
+                border-radius: 7px;
+                padding: 7px 22px;
+                color: #fff;
+                font-size: 15px;
+                font-weight: 600;
+            }
+            QPushButton:hover {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                    stop:0 #2870f0, stop:1 #40a0ff);
+                border-color: rgba(100, 180, 255, 0.5);
+            }
+            QPushButton:pressed {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                    stop:0 #1850c0, stop:1 #2870e0);
+            }
+        """
+        _btn_style_accent = """
+            QPushButton {
+                background: transparent;
+                border: 1px solid #252a3c;
+                border-radius: 7px;
+                padding: 7px 16px;
+                color: #6078a0;
+                font-size: 15px;
+                font-weight: 500;
+            }
+            QPushButton:hover {
+                border-color: rgba(80, 140, 255, 0.3);
+                color: #b0c0e0;
+                background-color: rgba(80, 140, 255, 0.06);
+            }
+            QPushButton:pressed {
+                background-color: rgba(80, 140, 255, 0.12);
+            }
+        """
+        _btn_style_checkable = """
+            QPushButton {
+                background: transparent;
+                border: 1px solid #252a3c;
+                border-radius: 7px;
+                padding: 7px 16px;
+                color: #6070a0;
+                font-size: 15px;
+                font-weight: 500;
+            }
+            QPushButton:hover {
+                border-color: rgba(80, 140, 255, 0.25);
+                color: #b0c0e0;
+                background-color: rgba(80, 140, 255, 0.06);
+            }
+            QPushButton:checked {
+                background-color: rgba(48, 136, 255, 0.15);
+                border-color: rgba(80, 160, 255, 0.4);
+                color: #6eb4ff;
+            }
+            QPushButton:pressed {
+                background-color: rgba(48, 136, 255, 0.22);
+            }
+        """
+
+        def _make_group(widgets):
+            """Wrap buttons in a rounded container."""
+            grp = QWidget()
+            grp.setObjectName("toolGroup")
+            grp.setStyleSheet(_grp_style)
+            lay = QHBoxLayout(grp)
+            lay.setContentsMargins(4, 4, 4, 4)
+            lay.setSpacing(2)
+            for w in widgets:
+                lay.addWidget(w)
+            return grp
+
+        # -- File group (highlighted) --
+        _btn_style_file = """
+            QPushButton {
+                background: transparent;
+                border: 1px solid rgba(80, 160, 255, 0.3);
+                border-radius: 7px;
+                padding: 7px 16px;
+                color: #6eb4ff;
+                font-size: 15px;
+                font-weight: 600;
+            }
+            QPushButton:hover {
+                background-color: rgba(80, 140, 255, 0.12);
+                border-color: rgba(80, 160, 255, 0.5);
+                color: #a0d0ff;
+            }
+            QPushButton:pressed {
+                background-color: rgba(80, 140, 255, 0.2);
+            }
+        """
+        self.btn_open = QPushButton("打开图像")
+        self.btn_open.setStyleSheet(_btn_style_file)
         self.btn_open.clicked.connect(self.open_image)
-        toolbar.addWidget(self.btn_open)
 
-        self.btn_folder = QPushButton("📂 打开文件夹")
+        self.btn_folder = QPushButton("打开文件夹")
+        self.btn_folder.setStyleSheet(_btn_style_file)
         self.btn_folder.clicked.connect(self.open_folder)
-        toolbar.addWidget(self.btn_folder)
 
-        toolbar.addSeparator()
+        toolbar.addWidget(_make_group([self.btn_open, self.btn_folder]))
 
-        self.btn_prev = QPushButton("◀ 上一张")
+        # -- Navigation group --
+        self.btn_prev = QPushButton("<")
+        self.btn_prev.setStyleSheet(_btn_style_nav)
         self.btn_prev.clicked.connect(self._prev_image)
-        toolbar.addWidget(self.btn_prev)
 
         self.lbl_image_index = QLabel("")
-        self.lbl_image_index.setStyleSheet("color: #aaa; padding: 0 6px;")
-        toolbar.addWidget(self.lbl_image_index)
+        self.lbl_image_index.setAlignment(Qt.AlignCenter)
+        self.lbl_image_index.setStyleSheet(
+            "color: #6eb4ff; font-weight: 700; font-size: 15px; "
+            "padding: 0 2px; min-width: 36px; border: none;")
 
-        self.btn_next = QPushButton("下一张 ▶")
+        self.btn_next = QPushButton(">")
+        self.btn_next.setStyleSheet(_btn_style_nav)
         self.btn_next.clicked.connect(self._next_image)
-        toolbar.addWidget(self.btn_next)
 
-        toolbar.addSeparator()
+        toolbar.addWidget(_make_group([self.btn_prev, self.lbl_image_index, self.btn_next]))
 
-        self.btn_roi = QPushButton("[+] 选择ROI")
+        # -- ROI group --
+        self.btn_roi = QPushButton("选择ROI")
+        self.btn_roi.setStyleSheet(_btn_style_checkable)
         self.btn_roi.setCheckable(True)
         self.btn_roi.toggled.connect(self._toggle_roi_mode)
-        toolbar.addWidget(self.btn_roi)
 
-        self.btn_clear_roi = QPushButton("[x] 清除ROI")
+        self.btn_clear_roi = QPushButton("清除ROI")
+        self.btn_clear_roi.setStyleSheet(_btn_style_normal)
         self.btn_clear_roi.clicked.connect(self._clear_roi)
-        toolbar.addWidget(self.btn_clear_roi)
 
-        toolbar.addSeparator()
+        toolbar.addWidget(_make_group([self.btn_roi, self.btn_clear_roi]))
 
-        self.btn_analyze = QPushButton("▶ 分析")
+        # -- Analysis group --
+        self.btn_analyze = QPushButton("分析")
         self.btn_analyze.setObjectName("primaryBtn")
+        self.btn_analyze.setStyleSheet(_btn_style_primary)
         self.btn_analyze.clicked.connect(self.analyze_current)
-        toolbar.addWidget(self.btn_analyze)
 
-        self.btn_batch_analyze = QPushButton("▶▶ 批量分析")
+        self.btn_batch_analyze = QPushButton("批量分析")
         self.btn_batch_analyze.setObjectName("primaryBtn")
+        self.btn_batch_analyze.setStyleSheet(_btn_style_primary)
         self.btn_batch_analyze.clicked.connect(self.batch_analyze)
-        toolbar.addWidget(self.btn_batch_analyze)
 
-        toolbar.addSeparator()
+        toolbar.addWidget(_make_group([self.btn_analyze, self.btn_batch_analyze]))
 
-        self.btn_export = QPushButton("💾 导出CSV")
+        # -- Export group --
+        self.btn_export = QPushButton("导出CSV")
+        self.btn_export.setStyleSheet(_btn_style_accent)
         self.btn_export.clicked.connect(self.export_results)
-        toolbar.addWidget(self.btn_export)
 
-        self.btn_save_img = QPushButton("🖼 保存图像")
+        self.btn_save_img = QPushButton("保存图像")
+        self.btn_save_img.setStyleSheet(_btn_style_accent)
         self.btn_save_img.clicked.connect(self.save_analysis_image)
-        toolbar.addWidget(self.btn_save_img)
 
-        toolbar.addSeparator()
+        toolbar.addWidget(_make_group([self.btn_export, self.btn_save_img]))
 
-        self.btn_lang = QPushButton("🌐 English")
+        # -- Spacer to push lang button to the right --
+        spacer = QWidget()
+        spacer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        spacer.setStyleSheet("background: transparent;")
+        toolbar.addWidget(spacer)
+
+        # -- Language button (standalone, right-aligned) --
+        self.btn_lang = QPushButton("English")
+        self.btn_lang.setStyleSheet(_btn_style_normal)
         self.btn_lang.clicked.connect(self._toggle_language)
-        toolbar.addWidget(self.btn_lang)
+        toolbar.addWidget(_make_group([self.btn_lang]))
 
         # ── Main layout ──
         central = QWidget()
         self.setCentralWidget(central)
         main_layout = QHBoxLayout(central)
-        main_layout.setContentsMargins(4, 4, 4, 4)
-        main_layout.setSpacing(4)
+        main_layout.setContentsMargins(8, 8, 8, 8)
+        main_layout.setSpacing(8)
 
         splitter = QSplitter(Qt.Horizontal)
         main_layout.addWidget(splitter)
 
         # ── Left side: image display area ──
         left_widget = QWidget()
+        left_widget.setStyleSheet("QWidget { background-color: #131620; }")
         left_layout = QVBoxLayout(left_widget)
         left_layout.setContentsMargins(0, 0, 0, 0)
 
         # Image area + side navigation arrows
         image_area = QWidget()
+        image_area.setStyleSheet("QWidget { background-color: #131620; }")
         image_h_layout = QHBoxLayout(image_area)
         image_h_layout.setContentsMargins(0, 0, 0, 0)
         image_h_layout.setSpacing(0)
 
-        self.btn_prev_side = QPushButton("◀")
-        self.btn_prev_side.setFixedWidth(32)
+        self.btn_prev_side = QPushButton("<")
+        self.btn_prev_side.setFixedWidth(28)
         self.btn_prev_side.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding)
         self.btn_prev_side.clicked.connect(self._prev_image)
         self.btn_prev_side.setStyleSheet("""
             QPushButton {
-                background-color: rgba(30,30,30,180); color: #aaa;
-                border: none; font-size: 18px; border-radius: 4px;
+                background: transparent; color: #252a3c;
+                border: none; font-size: 22px; font-weight: 300;
             }
-            QPushButton:hover { background-color: rgba(60,60,60,220); color: white; }
+            QPushButton:hover { color: #6eb4ff; }
         """)
         image_h_layout.addWidget(self.btn_prev_side)
 
@@ -625,18 +1049,152 @@ class IHCScorer(QMainWindow):
         self.image_tabs.addTab(self.canvas_dab, "DAB通道")
         self.image_tabs.addTab(self.canvas_hem, "Hematoxylin通道")
         self.image_tabs.addTab(self.canvas_score, "评分结果")
-        image_h_layout.addWidget(self.image_tabs)
 
-        self.btn_next_side = QPushButton("▶")
-        self.btn_next_side.setFixedWidth(32)
+        # ── Welcome page (shown when no image loaded) ──
+        from PyQt5.QtWidgets import QStackedWidget, QListWidget, QListWidgetItem
+        self._image_stack = QStackedWidget()
+        self._welcome_page = QWidget()
+        self._welcome_page.setStyleSheet("QWidget { background-color: #10131c; }")
+        welcome_layout = QVBoxLayout(self._welcome_page)
+        welcome_layout.setAlignment(Qt.AlignCenter)
+        welcome_layout.setSpacing(0)
+
+        # Title
+        self._welcome_title = QLabel("FAST IHC Analyzer")
+        self._welcome_title.setAlignment(Qt.AlignCenter)
+        self._welcome_title.setStyleSheet(
+            "font-size: 32px; font-weight: 300; color: #4a6a9a; "
+            "border: none; background: transparent; padding: 0; "
+            "letter-spacing: 4px;")
+        welcome_layout.addWidget(self._welcome_title)
+
+        # Subtitle
+        self._welcome_subtitle = QLabel("请打开图像或文件夹开始分析")
+        self._welcome_subtitle.setAlignment(Qt.AlignCenter)
+        self._welcome_subtitle.setStyleSheet(
+            "font-size: 14px; color: #3a4a68; border: none; "
+            "background: transparent; padding: 6px 0 36px 0;")
+        welcome_layout.addWidget(self._welcome_subtitle)
+
+        # ── Action cards (vertical, centered) ──
+        cards_container = QWidget()
+        cards_container.setStyleSheet("background: transparent;")
+        cards_container.setMaximumWidth(400)
+        cards_layout = QVBoxLayout(cards_container)
+        cards_layout.setSpacing(12)
+        cards_layout.setContentsMargins(0, 0, 0, 0)
+
+        # Card: Open Folder (primary)
+        self._welcome_btn_folder = QPushButton("打开文件夹")
+        self._welcome_btn_folder.setStyleSheet("""
+            QPushButton {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                    stop:0 #1e55cc, stop:0.5 #2868e0, stop:1 #3580f8);
+                border: none;
+                border-radius: 12px;
+                padding: 16px 40px;
+                color: #ffffff;
+                font-size: 17px;
+                font-weight: 600;
+                min-width: 280px;
+            }
+            QPushButton:hover {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                    stop:0 #2868e0, stop:0.5 #3580f8, stop:1 #4a98ff);
+            }
+            QPushButton:pressed {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                    stop:0 #1848b0, stop:0.5 #2058cc, stop:1 #2868e0);
+            }
+        """)
+        self._welcome_btn_folder.clicked.connect(self.open_folder)
+        self._welcome_btn_folder.setCursor(QCursor(Qt.PointingHandCursor))
+        cards_layout.addWidget(self._welcome_btn_folder, 0, Qt.AlignCenter)
+
+        # Card: Open Image (secondary / outline)
+        self._welcome_btn_image = QPushButton("打开图像")
+        self._welcome_btn_image.setStyleSheet("""
+            QPushButton {
+                background: transparent;
+                border: 1px solid #252e44;
+                border-radius: 12px;
+                padding: 14px 40px;
+                color: #6080b0;
+                font-size: 15px;
+                font-weight: 500;
+                min-width: 280px;
+            }
+            QPushButton:hover {
+                border-color: #3a5080;
+                color: #90b0e0;
+                background-color: rgba(60, 100, 180, 0.06);
+            }
+            QPushButton:pressed {
+                background-color: rgba(60, 100, 180, 0.12);
+            }
+        """)
+        self._welcome_btn_image.clicked.connect(self.open_image)
+        self._welcome_btn_image.setCursor(QCursor(Qt.PointingHandCursor))
+        cards_layout.addWidget(self._welcome_btn_image, 0, Qt.AlignCenter)
+
+        welcome_layout.addWidget(cards_container, 0, Qt.AlignCenter)
+
+        # Recent folders section
+        self._recent_label = QLabel("最近打开的文件夹")
+        self._recent_label.setAlignment(Qt.AlignCenter)
+        self._recent_label.setStyleSheet(
+            "font-size: 13px; color: #3a4a68; border: none; "
+            "background: transparent; padding-top: 32px; padding-bottom: 8px;")
+        welcome_layout.addWidget(self._recent_label)
+
+        self._recent_list = QListWidget()
+        self._recent_list.setMaximumWidth(500)
+        self._recent_list.setMaximumHeight(200)
+        self._recent_list.setStyleSheet("""
+            QListWidget {
+                background-color: #141824;
+                border: 1px solid #1a2035;
+                border-radius: 10px;
+                padding: 6px;
+                font-size: 14px;
+                color: #8090b0;
+            }
+            QListWidget::item {
+                padding: 8px 14px;
+                border-radius: 6px;
+                border: none;
+            }
+            QListWidget::item:hover {
+                background-color: rgba(80, 140, 255, 0.1);
+                color: #b0c8f0;
+            }
+            QListWidget::item:selected {
+                background-color: rgba(80, 140, 255, 0.15);
+                color: #6eb4ff;
+            }
+        """)
+        self._recent_list.itemDoubleClicked.connect(self._open_recent_folder)
+        self._recent_list.setCursor(QCursor(Qt.PointingHandCursor))
+        welcome_layout.addWidget(self._recent_list, 0, Qt.AlignCenter)
+
+        self._load_recent_folders()
+
+        self._image_stack.addWidget(self._welcome_page)  # index 0
+        self._image_stack.addWidget(self.image_tabs)       # index 1
+        self._image_stack.setCurrentIndex(0)
+
+        image_h_layout.addWidget(self._image_stack)
+
+        self.btn_next_side = QPushButton(">")
+        self.btn_next_side.setFixedWidth(28)
         self.btn_next_side.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding)
         self.btn_next_side.clicked.connect(self._next_image)
         self.btn_next_side.setStyleSheet("""
             QPushButton {
-                background-color: rgba(30,30,30,180); color: #aaa;
-                border: none; font-size: 18px; border-radius: 4px;
+                background: transparent; color: #252a3c;
+                border: none; font-size: 22px; font-weight: 300;
             }
-            QPushButton:hover { background-color: rgba(60,60,60,220); color: white; }
+            QPushButton:hover { color: #6eb4ff; }
         """)
         image_h_layout.addWidget(self.btn_next_side)
 
@@ -645,14 +1203,17 @@ class IHCScorer(QMainWindow):
 
         # ── Right side: control panel ──
         right_widget = QWidget()
-        right_widget.setMinimumWidth(300)
+        right_widget.setMinimumWidth(360)
+        right_widget.setStyleSheet("QWidget { background-color: #131620; }")
         right_layout = QVBoxLayout(right_widget)
-        right_layout.setContentsMargins(4, 4, 4, 4)
+        right_layout.setContentsMargins(8, 8, 8, 8)
 
         right_scroll = QScrollArea()
         right_scroll.setWidgetResizable(True)
         right_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        right_scroll.setStyleSheet("QScrollArea { background-color: #131620; border: none; }")
         right_inner = QWidget()
+        right_inner.setStyleSheet("QWidget { background-color: #131620; }")
         right_inner_layout = QVBoxLayout(right_inner)
 
         # Hidden controls (kept for language-switch compatibility)
@@ -702,7 +1263,7 @@ class IHCScorer(QMainWindow):
 
         self.result_text = QTextEdit()
         self.result_text.setReadOnly(True)
-        self.result_text.setFont(QFont("Times New Roman", 13))
+        self.result_text.setFont(QFont("SF Mono, Menlo, Consolas, monospace", 14))
         result_layout.addWidget(self.result_text, 1)  # stretch=1 auto-fill
 
         self.grp_result.setLayout(result_layout)
@@ -712,7 +1273,7 @@ class IHCScorer(QMainWindow):
         right_layout.addWidget(right_scroll)
         splitter.addWidget(right_widget)
 
-        splitter.setSizes([900, 400])
+        splitter.setSizes([850, 450])
 
         # ── Bottom: batch results tab (resizable via splitter) ──
         self.batch_tab = QTabWidget()
@@ -725,6 +1286,7 @@ class IHCScorer(QMainWindow):
         # Vertical splitter: image + control panel on top, batch table below
         vsplitter = QSplitter(Qt.Vertical)
         upper_widget = QWidget()
+        upper_widget.setStyleSheet("QWidget { background-color: #131620; }")
         upper_widget.setLayout(main_layout)
         vsplitter.addWidget(upper_widget)
         vsplitter.addWidget(self.batch_tab)
@@ -735,6 +1297,7 @@ class IHCScorer(QMainWindow):
         outer_layout.setContentsMargins(0, 0, 0, 0)
 
         outer_widget = QWidget()
+        outer_widget.setStyleSheet("QWidget { background-color: #131620; }")
         outer_widget.setLayout(outer_layout)
         self.setCentralWidget(outer_widget)
 
@@ -757,8 +1320,11 @@ class IHCScorer(QMainWindow):
 
     def open_folder(self):
         folder = QFileDialog.getExistingDirectory(self, "选择图像文件夹", "")
-        if not folder:
-            return
+        if folder:
+            self._do_open_folder(folder)
+
+    def _do_open_folder(self, folder):
+        """Open a folder by path (used by both dialog and recent list)."""
         IMAGE_EXTS = {'.png', '.jpg', '.jpeg', '.tif', '.tiff', '.bmp', '.svs'}
         paths = sorted([
             os.path.join(folder, f) for f in os.listdir(folder)
@@ -767,6 +1333,7 @@ class IHCScorer(QMainWindow):
         if not paths:
             QMessageBox.information(self, "提示", "所选文件夹中未找到图像文件")
             return
+        self._save_recent_folder(folder)
         self.batch_files = paths
         self.current_index = 0
         self._load_image(paths[0])
@@ -796,6 +1363,9 @@ class IHCScorer(QMainWindow):
         if img is None:
             QMessageBox.warning(self, "错误", f"无法打开图像:\n{path}")
             return
+
+        # Switch from welcome page to image tabs
+        self._show_image_tabs()
 
         self.original_image = img
         self.rgb_image = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
@@ -903,11 +1473,12 @@ class IHCScorer(QMainWindow):
         self._display_results(results)
         self._create_score_overlay(results)
 
-    def _calculate_scores(self, dab=None, roi=None, positive_ratio=None, thresholds=None):
+    def _calculate_scores(self, dab=None, roi=None, positive_ratio=None, thresholds=None, roi_mask=None):
         """Calculate IHC scores (mirrors tiff/ihc_gui.py IHCAnalyzer logic).
         - Grayscale grading on masked image, thresholds controlled by sliders
         - Higher grayscale = stronger staining within positive regions
         - thresholds: (t_high, t_pos, t_low) three grayscale thresholds
+        - roi_mask: optional numpy binary mask for freehand ROI
         """
         if dab is None:
             dab = self.dab_channel
@@ -922,11 +1493,17 @@ class IHCScorer(QMainWindow):
             t_pos = self.slider_moderate.value()    # Positive threshold (>=)
             t_low = self.slider_weak.value()        # Low positive threshold (>=)
 
-        # Get analysis region
-        if roi is None:
-            roi = self.canvas_original.get_roi()
+        # Get analysis region — freehand polygon mask or bounding rect
+        if roi_mask is None and roi is None:
+            roi_mask = self.canvas_original.get_roi_mask(dab.shape)
 
-        if roi and not roi.isNull():
+        if roi_mask is not None:
+            # Freehand ROI: extract pixels within the polygon
+            gray = dab[roi_mask > 0]
+            is_en = hasattr(self, 'lang') and self.lang is self.LANG_EN
+            n_roi = int(np.sum(roi_mask > 0))
+            area_info = f"ROI (freehand, {n_roi:,} px)" if is_en else f"ROI (自由圈选, {n_roi:,} px)"
+        elif roi is not None and not roi.isNull():
             x, y, w, h = roi.x(), roi.y(), roi.width(), roi.height()
             x = max(0, x)
             y = max(0, y)
@@ -995,16 +1572,22 @@ class IHCScorer(QMainWindow):
             intensity_score = 3
             intensity_label = 'Strong Positive' if is_en else '强阳性'
 
+        # When very few positive pixels (<5%), cap intensity to avoid noise-driven inflation
+        if positive_ratio < 0.05 and intensity_score > 1:
+            intensity_score = 1
+            intensity_label = 'Low Positive' if is_en else '弱阳性'
+
         intensity_basis = (f"Mean positive gray: {mean_intensity:.1f}"
                            if is_en else f"阳性区域平均灰度: {mean_intensity:.1f}")
 
         # Positive proportion score (1-4), based on HSV-detected positive_ratio
+        # Adjusted thresholds: 10/25/50 for better sensitivity on low-expression markers
         pos_pct = positive_ratio * 100
-        if pos_pct <= 25:
+        if pos_pct <= 10:
             proportion_score = 1
-        elif pos_pct <= 50:
+        elif pos_pct <= 25:
             proportion_score = 2
-        elif pos_pct <= 75:
+        elif pos_pct <= 50:
             proportion_score = 3
         else:
             proportion_score = 4
@@ -1133,65 +1716,92 @@ class IHCScorer(QMainWindow):
         """Create score overlay image.
         Only colorize HSV-detected positive regions by intensity; non-positive
         regions are shown dimmed from the original image.
+        Supports both freehand polygon ROI and rectangular ROI.
         """
-        if 'masks' not in results or self.rgb_image is None:
+        if self.rgb_image is None or self.dab_channel is None:
             return
 
-        masks = results['masks']
-        roi = self.canvas_original.get_roi()
+        overlay = self.rgb_image.copy()
+        dab = self.dab_channel
+        hsv_mask_full = self.hsv_mask
 
-        if roi and not roi.isNull():
-            x, y, w, h = roi.x(), roi.y(), roi.width(), roi.height()
+        t_high = self.slider_strong.value()
+        t_pos = self.slider_moderate.value()
+        t_low = self.slider_weak.value()
+
+        # Determine analysis region mask (full image, freehand, or rect)
+        roi_mask = self.canvas_original.get_roi_mask(dab.shape)
+        roi_rect = self.canvas_original.get_roi()
+
+        if roi_mask is not None:
+            # Freehand ROI: build 2D grading masks within the polygon
+            in_roi = (roi_mask > 0)
+            high_mask = in_roi & (dab >= t_high)
+            pos_mask = in_roi & (dab >= t_pos) & (dab < t_high)
+            low_mask = in_roi & (dab >= t_low) & (dab < t_pos)
+            # Dim everything outside the ROI
+            outside = ~in_roi
+            overlay[outside] = (overlay[outside] * 0.4).astype(np.uint8)
+            # Dim non-positive inside ROI
+            if hsv_mask_full is not None:
+                non_pos_in_roi = in_roi & (hsv_mask_full == 0)
+                overlay[non_pos_in_roi] = (overlay[non_pos_in_roi] * 0.7).astype(np.uint8)
+        elif roi_rect and not roi_rect.isNull():
+            x, y, w, h = roi_rect.x(), roi_rect.y(), roi_rect.width(), roi_rect.height()
             x, y = max(0, x), max(0, y)
-            w = min(w, self.rgb_image.shape[1] - x)
-            h = min(h, self.rgb_image.shape[0] - y)
-            overlay = self.rgb_image[y:y+h, x:x+w].copy()
-            hsv_mask_roi = self.hsv_mask[y:y+h, x:x+w] if self.hsv_mask is not None else None
+            w = min(w, dab.shape[1] - x)
+            h = min(h, dab.shape[0] - y)
+            roi_dab = dab[y:y+h, x:x+w]
+            high_mask_r = (roi_dab >= t_high)
+            pos_mask_r = (roi_dab >= t_pos) & (roi_dab < t_high)
+            low_mask_r = (roi_dab >= t_low) & (roi_dab < t_pos)
+            # Create full-size masks
+            high_mask = np.zeros(dab.shape, dtype=bool)
+            pos_mask = np.zeros(dab.shape, dtype=bool)
+            low_mask = np.zeros(dab.shape, dtype=bool)
+            high_mask[y:y+h, x:x+w] = high_mask_r
+            pos_mask[y:y+h, x:x+w] = pos_mask_r
+            low_mask[y:y+h, x:x+w] = low_mask_r
+            if hsv_mask_full is not None:
+                non_positive = (hsv_mask_full == 0)
+                overlay[non_positive] = (overlay[non_positive] * 0.7).astype(np.uint8)
         else:
-            overlay = self.rgb_image.copy()
-            hsv_mask_roi = self.hsv_mask
+            # Full image
+            high_mask = (dab >= t_high)
+            pos_mask = (dab >= t_pos) & (dab < t_high)
+            low_mask = (dab >= t_low) & (dab < t_pos)
+            if hsv_mask_full is not None:
+                non_positive = (hsv_mask_full == 0)
+                overlay[non_positive] = (overlay[non_positive] * 0.7).astype(np.uint8)
 
-        # Colorize positive regions by intensity grade
+        # Colorize by intensity grade
         alpha = 0.45
-
-        # Low Positive - green (within HSV positive regions only)
-        overlay[masks['low_pos']] = (
-            overlay[masks['low_pos']] * (1 - alpha) +
-            np.array([102, 187, 106]) * alpha
-        ).astype(np.uint8)
-
-        # Positive - orange
-        overlay[masks['positive']] = (
-            overlay[masks['positive']] * (1 - alpha) +
-            np.array([255, 167, 38]) * alpha
-        ).astype(np.uint8)
-
-        # High Positive - red
-        overlay[masks['high_pos']] = (
-            overlay[masks['high_pos']] * (1 - alpha) +
-            np.array([239, 83, 80]) * alpha
-        ).astype(np.uint8)
-
-        # Non-positive regions (not detected by HSV): dim slightly to highlight positive areas
-        if hsv_mask_roi is not None:
-            non_positive = (hsv_mask_roi == 0)
-            overlay[non_positive] = (overlay[non_positive] * 0.7).astype(np.uint8)
+        if np.any(low_mask):
+            overlay[low_mask] = (overlay[low_mask] * (1 - alpha) + np.array([102, 187, 106]) * alpha).astype(np.uint8)
+        if np.any(pos_mask):
+            overlay[pos_mask] = (overlay[pos_mask] * (1 - alpha) + np.array([255, 167, 38]) * alpha).astype(np.uint8)
+        if np.any(high_mask):
+            overlay[high_mask] = (overlay[high_mask] * (1 - alpha) + np.array([239, 83, 80]) * alpha).astype(np.uint8)
 
         self.score_mask = overlay
         self.canvas_score.set_image(overlay, is_rgb=True)
-        self.image_tabs.setCurrentIndex(3)  # Switch to score overlay tab
+        self.image_tabs.setCurrentIndex(3)
 
     def _update_histogram(self):
         """Update grayscale histogram."""
         if self.dab_channel is None:
             return
-        roi = self.canvas_original.get_roi()
-        if roi and not roi.isNull():
-            x, y, w, h = roi.x(), roi.y(), roi.width(), roi.height()
-            x, y = max(0, x), max(0, y)
-            data = self.dab_channel[y:y+h, x:x+w]
+        roi_mask = self.canvas_original.get_roi_mask(self.dab_channel.shape)
+        if roi_mask is not None:
+            data = self.dab_channel[roi_mask > 0]
         else:
-            data = self.dab_channel
+            roi = self.canvas_original.get_roi()
+            if roi and not roi.isNull():
+                x, y, w, h = roi.x(), roi.y(), roi.width(), roi.height()
+                x, y = max(0, x), max(0, y)
+                data = self.dab_channel[y:y+h, x:x+w]
+            else:
+                data = self.dab_channel
 
         # Grayscale threshold lines: High+, Positive, Low+
         thresholds = [
@@ -1255,6 +1865,76 @@ class IHCScorer(QMainWindow):
         self.slider_weak.blockSignals(False)
         self._on_threshold_changed()
 
+    def _update_canvas_hints(self):
+        """Update placeholder hints on welcome page."""
+        L = self.lang
+        self._welcome_subtitle.setText(L['empty_hint'])
+        self._welcome_btn_image.setText(L['toolbar_open'])
+        self._welcome_btn_folder.setText(L['toolbar_folder'])
+        if L is self.LANG_ZH:
+            self._recent_label.setText("最近打开的文件夹")
+        else:
+            self._recent_label.setText("Recent Folders")
+
+    def _show_welcome(self):
+        """Show the welcome page."""
+        self._image_stack.setCurrentIndex(0)
+
+    def _show_image_tabs(self):
+        """Show the image tabs."""
+        self._image_stack.setCurrentIndex(1)
+
+    @staticmethod
+    def _recent_folders_path():
+        """Path to recent folders file."""
+        config_dir = os.path.join(os.path.expanduser("~"), ".ihc_analyzer")
+        os.makedirs(config_dir, exist_ok=True)
+        return os.path.join(config_dir, "recent_folders.txt")
+
+    def _load_recent_folders(self):
+        """Load recent folders from disk."""
+        self._recent_list.clear()
+        path = self._recent_folders_path()
+        if os.path.exists(path):
+            with open(path, 'r', encoding='utf-8') as f:
+                folders = [line.strip() for line in f if line.strip() and os.path.isdir(line.strip())]
+            for folder in folders[:8]:
+                # Show folder name + parent path
+                name = os.path.basename(folder)
+                parent = os.path.dirname(folder)
+                from PyQt5.QtWidgets import QListWidgetItem
+                item = QListWidgetItem(f"{name}    {parent}")
+                item.setData(Qt.UserRole, folder)
+                self._recent_list.addItem(item)
+        if self._recent_list.count() == 0:
+            self._recent_label.hide()
+            self._recent_list.hide()
+        else:
+            self._recent_label.show()
+            self._recent_list.show()
+
+    def _save_recent_folder(self, folder):
+        """Save a folder to the recent list (most recent first, max 8)."""
+        path = self._recent_folders_path()
+        folders = []
+        if os.path.exists(path):
+            with open(path, 'r', encoding='utf-8') as f:
+                folders = [line.strip() for line in f if line.strip()]
+        # Remove duplicates, add to front
+        folder = os.path.abspath(folder)
+        folders = [f for f in folders if f != folder]
+        folders.insert(0, folder)
+        folders = folders[:8]
+        with open(path, 'w', encoding='utf-8') as f:
+            f.write('\n'.join(folders) + '\n')
+        self._load_recent_folders()
+
+    def _open_recent_folder(self, item):
+        """Open a folder from the recent list."""
+        folder = item.data(Qt.UserRole)
+        if folder and os.path.isdir(folder):
+            self._do_open_folder(folder)
+
     # ─── Language toggle ────────────────────────────────────────────
     def _toggle_language(self):
         if self.lang is self.LANG_ZH:
@@ -1266,19 +1946,18 @@ class IHCScorer(QMainWindow):
     def _apply_language(self):
         L = self.lang
         self.setWindowTitle(L['title'])
-        self.btn_lang.setText("🌐 " + L['lang_switch'])
+        self.btn_lang.setText(L['lang_switch'])
 
         # Toolbar buttons
-        self.btn_open.setText("📂 " + L['toolbar_open'])
-        self.btn_folder.setText("📂 " + L['toolbar_folder'])
-        self.btn_prev.setText("◀ " + L['toolbar_prev'])
-        self.btn_next.setText(L['toolbar_next'] + " ▶")
-        self.btn_roi.setText("[+] " + L['toolbar_roi'])
-        self.btn_clear_roi.setText("[x] " + L['toolbar_clear_roi'])
-        self.btn_analyze.setText("▶ " + L['toolbar_analyze'])
-        self.btn_batch_analyze.setText("▶▶ " + L['toolbar_batch_analyze'])
-        self.btn_export.setText("💾 " + L['toolbar_export'])
-        self.btn_save_img.setText("🖼 " + L['toolbar_save'])
+        self.btn_open.setText(L['toolbar_open'])
+        self.btn_folder.setText(L['toolbar_folder'])
+        # Navigation buttons keep < > symbols
+        self.btn_roi.setText(L['toolbar_roi'])
+        self.btn_clear_roi.setText(L['toolbar_clear_roi'])
+        self.btn_analyze.setText(L['toolbar_analyze'])
+        self.btn_batch_analyze.setText(L['toolbar_batch_analyze'])
+        self.btn_export.setText(L['toolbar_export'])
+        self.btn_save_img.setText(L['toolbar_save'])
 
         # Menu items
         self.act_open.setText(L['open'])
@@ -1321,6 +2000,9 @@ class IHCScorer(QMainWindow):
         self._update_threshold_info()
 
         self.statusBar().showMessage(L['status_ready'])
+
+        # Update canvas empty hints
+        self._update_canvas_hints()
 
         # After language switch, recalculate and redisplay results if available
         if self.dab_channel is not None:
@@ -1401,18 +2083,32 @@ class IHCScorer(QMainWindow):
         if checked:
             self.statusBar().showMessage("ROI模式: 在图像上拖拽选择分析区域")
 
-    def _on_roi_selected(self, roi):
+    def _on_roi_selected(self, roi_data):
         self.btn_roi.setChecked(False)
+        # Sync freehand ROI to DAB canvas
+        if isinstance(roi_data, list):
+            self.canvas_dab._roi_points = list(roi_data)
+            self.canvas_dab._update_display()
         self._update_histogram()
-        self.statusBar().showMessage(
-            f"已选择ROI: ({roi.x()}, {roi.y()}) - "
-            f"{roi.width()}×{roi.height()}"
-        )
+        if isinstance(roi_data, list):
+            n_pts = len(roi_data)
+            self.statusBar().showMessage(f"已选择ROI: 自由圈选 ({n_pts} 个点)")
+        else:
+            self.statusBar().showMessage(
+                f"已选择ROI: ({roi_data.x()}, {roi_data.y()}) - "
+                f"{roi_data.width()}x{roi_data.height()}"
+            )
 
     def _clear_roi(self):
         self.canvas_original.clear_roi()
         self.canvas_dab.clear_roi()
+        self.canvas_score.clear_roi()
         self._update_histogram()
+        # Re-analyze without ROI to refresh score overlay
+        if self.dab_channel is not None:
+            results = self._calculate_scores()
+            self._display_results(results)
+            self._create_score_overlay(results)
         self.statusBar().showMessage("已清除ROI选区")
 
     # ─── Batch analysis ────────────────────────────────────────────
